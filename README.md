@@ -2,10 +2,14 @@
 
 ProjectScone · A JudgeHuman project by Mark Sturman
 
+[Source repository](https://github.com/ProjectScone/ProjectScone-Rust) ·
+[Releases](https://github.com/ProjectScone/ProjectScone-Rust/releases)
+
 The native Rust temporal memory engine, CLI, HTTP/MCP server, C ABI and benchmark
 harness. This Cargo workspace builds independently. The Python framework lives
-in the separate ProjectScone repository; the React frontend lives in the separate
-ProjectScone-Webapp repository. Neither checkout is required for Rust builds.
+in the separate [ProjectScone repository](https://github.com/ProjectScone/ProjectScone);
+the React frontend lives in [ProjectScone-Webapp](https://github.com/ProjectScone/ProjectScone-Webapp).
+Neither checkout is required for Rust builds.
 
 ## Build and run
 
