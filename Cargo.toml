@@ -6,4 +6,4 @@ members = ["crates/*"]
 version = "0.2.1"
 edition = "2024"
 license-file = "LICENSE"
-repository = "https://github.com/DrDrewCain/ProjectScone"
+repository = "https://github.com/ProjectScone/ProjectScone-Rust"
