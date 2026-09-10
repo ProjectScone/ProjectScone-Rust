@@ -89,11 +89,11 @@ notes for Apple Silicon macOS and x86-64 Linux. It does **not** package a compil
 FFI library. Manual workflow runs produce downloadable CI artifacts; version
 tags publish releases. No frontend or Python build runs during packaging.
 
-## License and citation
 
-Current versions use the [ProjectScone Research Attribution License](LICENSE),
-a custom MIT-derived license with mandatory research and academic citation.
-This is not the unmodified MIT License. Credit Mark Sturman as author,
-JudgeHuman as company and ProjectScone as project. The original license and
-[CITATION.cff](CITATION.cff) are retained verbatim from the source repository;
-consult them for the complete terms and citation metadata.
+## Contributing, license and citation
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and review requirements.
+The [ProjectScone Research Attribution License](LICENSE) is custom and
+MIT-derived, with mandatory research and academic citation. Credit Mark
+Sturman, JudgeHuman and ProjectScone. [CITING.md](CITING.md) provides MLA,
+APA, Chicago and BibTeX examples; [CITATION.cff](CITATION.cff) provides metadata.

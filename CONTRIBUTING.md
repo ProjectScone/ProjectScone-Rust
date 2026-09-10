@@ -103,3 +103,13 @@ and private research out of commits. Use disposable local stores for tests.
 Record dataset/model versions, feature flags, retrieval quality, latency,
 resource use and failures; report Rust and Python measurements separately.
 Keep the inherited LICENSE and CITATION.cff terms intact.
+
+
+## Shared project guidance and citation
+
+See the [framework contribution guide](https://github.com/ProjectScone/ProjectScone/blob/main/CONTRIBUTING.md)
+for shared review, provenance and fixture expectations. Contributions use
+[LICENSE](LICENSE); preserve third-party license and attribution notices.
+[CITING.md](CITING.md) provides MLA, APA, Chicago and BibTeX examples for this
+repository; [CITATION.cff](CITATION.cff) records Mark Sturman, JudgeHuman and
+ProjectScone as the author, company and project.

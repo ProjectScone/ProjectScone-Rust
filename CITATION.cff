@@ -10,8 +10,8 @@ authors:
   - family-names: Sturman
     given-names: Mark
     affiliation: JudgeHuman
-repository-code: "https://github.com/DrDrewCain/ProjectScone"
-url: "https://github.com/DrDrewCain/ProjectScone"
+repository-code: "https://github.com/ProjectScone/ProjectScone-Rust"
+url: "https://github.com/ProjectScone/ProjectScone-Rust"
 preferred-citation:
   type: software
   title: ProjectScone
@@ -22,7 +22,7 @@ preferred-citation:
   year: 2026
   publisher:
     name: JudgeHuman
-  url: "https://github.com/DrDrewCain/ProjectScone"
+  url: "https://github.com/ProjectScone/ProjectScone-Rust"
 keywords:
   - retrieval-augmented generation
   - memory
