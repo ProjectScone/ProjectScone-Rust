@@ -1,102 +1,105 @@
-# Working on Scone
+# Working on ProjectScone Rust
 
-Rust and Python are first-class products. Keep their documented behavioral
-promises aligned without assuming identical implementations or performance.
+Create a feature branch, preserve unrelated changes and stage explicit paths.
+The complete native source tree is in `crates/`. Root `tests/fixtures/` contains
+five HTTP/prompt/profile/source/space contract fixtures used with `include_str!`;
+episode fixtures remain inside `crates/scone-core/tests/fixtures/`. Keep these
+paths local and intact when moving the repository.
 
-## Repository layout
+## Native checks
 
-```text
-crates/
-  scone-core/       Rust engine and native conformance tests
-  scone/            Rust CLI, HTTP/MCP integrations and console
-  scone-ffi/        C ABI subset and ownership/error tests
-  scone-bench/      Rust evaluation harness
-python/
-  scone-memory/    Native async/sync engine, adapters, API/MCP and console
-  scone-client/    HTTP client (distribution: scone-client; import: scone)
-scripts/           Development utilities, including mutation proofs
-.github/workflows/ CI and release workflows
-```
-
-The shared episode fixture lives inside `crates/scone-core/tests/fixtures/` so
-it ships with the Rust source package. Python checkout tests consume that same
-corpus. Normal Python library use does not require Rust or this fixture.
-
-Build outputs (`target/`, package `build/`, `dist/`, virtual environments and
-caches) are ignored. Local research/design notes (`memory/`, `docs/`), datasets
-and benchmark results are private and ignored; do not force-add them. They are
-not runtime dependencies. Never move an active database or benchmark output as
-part of source-layout cleanup.
-
-## Rust checks
-
-From the repository root:
+From the repository root, with a stable Rust toolchain and native C/C++ compiler:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings
+cargo test --locked --workspace --no-default-features
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
 ```
 
-Some tests use local embedding models and may need an initial download. For
-the deterministic episode contract, no model API/download is needed:
+These checks require neither Python nor Node nor another checkout. Add `--offline`
+to Cargo commands when dependency crates are cached. ONNX runtime build scripts
+may need their own cached native libraries even in Cargo offline mode. Default
+temporal-operator and MCP arithmetic tests need the embedding model in `~/.scone`
+and download it if missing. Use the minimal profile for model-free tests. Other
+model-download and long-running probes are ignored; run those only when
+intentionally provisioning the required models and measuring their results.
+CI validates minimal and default features separately and builds the deterministic
+external conformance probe. Compilation/Clippy supplies native type checking.
+
+`node --test scripts/test-prompt-hook-config.cjs` additionally verifies the
+optional hook installer without changing host settings. The optional browser
+suite is `node --test scripts/test-rust-console.cjs`, with a separately installed
+Playwright module supplied through `SCONE_PLAYWRIGHT_MODULE` or `NODE_PATH`, and
+an installed browser selected with `SCONE_BROWSER_PATH`. These JavaScript checks
+are not prerequisites for native builds. The optional mutation helper
+`scripts/prove-test.sh` requires zsh and Python 3; normal Rust checks do not use it.
+
+## External Python conformance
+
+Build the test-only deterministic JSONL exchange binary here:
 
 ```sh
-cargo test -p scone-core --test shared_contract --test portability
-cargo build -p scone-core --example episode_roundtrip
+cargo build --locked -p scone-core --no-default-features --example episode_roundtrip
+cargo test --locked -p scone-core --no-default-features --test shared_contract --test portability
 ```
 
-Use debug builds during normal development. Coordinate release builds and
-resource-heavy benchmarks with anyone already using the machine.
-
-## Native Python checks
-
-```sh
-cd python/memory
-python -m venv .venv
-.venv/bin/python -m pip install -e '.[test,qdrant]'
-.venv/bin/python -m pytest -q
-```
-
-For actual cross-runtime transfer, first build the Rust example above, then:
+In an independently installed Python framework test environment, run its
+`python/memory/tests/test_cross_language.py` suite with an explicit absolute
+binary path (adjust the checkout locations to your machine):
 
 ```sh
-SCONE_TEST_RUST_ROUNDTRIP="$(pwd)/../../target/debug/examples/episode_roundtrip" \
+cd /path/to/ProjectScone/python/memory
+SCONE_TEST_RUST_ROUNDTRIP=/path/to/ProjectScone-Rust/target/debug/examples/episode_roundtrip \
   .venv/bin/python -m pytest -q tests/test_cross_language.py
 ```
 
-Without that variable, the cross-runtime cases explicitly skip. To exercise
-MongoDB or Qdrant **server** fixtures, install the relevant extras and provide
-`SCONE_TEST_MONGO_URL` / `SCONE_TEST_QDRANT_URL` for disposable test services.
-These tests create and clean test databases/collections: never use production
-credentials or endpoints. Qdrant local mode is not server performance evidence.
+The Python repository owns its fixture copies and its conformance runner; Rust
+CI does not install Python or infer a sibling path. Recheck fixture byte identity
+when changing contracts in either repository. The probe is a limited episode
+profile with identity verification, not a migration tool or proof of complete
+fact/history portability. If `CARGO_TARGET_DIR` is set, use that output directory
+in the explicit binary path instead.
 
-## Python HTTP client checks
+## Updating embedded pages
+
+`crates/scone/src/console.html` is the native Rust console;
+`crates/scone/src/playground.html` is the retained shared playground snapshot.
+Cargo embeds these files directly. Ordinary Rust builds and releases must never
+invoke a frontend build or overwrite either file.
+
+To propose a playground update, use an explicit ProjectScone-Webapp checkout:
+
+1. Install its dependencies with `pnpm install --frozen-lockfile` and run its
+   tests and type checks.
+2. Use its explicit packaging output option to build a candidate into a temporary
+   directory. Check that the candidate is the playground intended for the Rust
+   HTTP routes; the Python-oriented React Memory page is not an interchangeable
+   replacement.
+3. Review the candidate diff, authentication handling, API requests and compatibility
+   with the Rust routes. Preserve any uncommitted destination edits before an
+   explicitly authorized update; do not let packaging select Rust files implicitly.
+4. Only after compatibility is verified, copy the selected candidate to the one
+   intended embedded asset, run the Rust HTTP tests and affected browser contracts,
+   and commit the reviewed snapshot as an explicit asset update.
+
+The candidate packaging command is explicit about the checkout and output:
 
 ```sh
-cd python/scone-client
-python -m venv .venv
-.venv/bin/python -m pip install -e '.[test]'
-.venv/bin/python -m pytest -q -m 'not integration'
+cd /path/to/ProjectScone-Webapp
+pnpm build
+node scripts/package.mjs --output /absolute/path/to/temp/playground.html
 ```
 
-Integration tests start a real Rust server and may compile a release binary;
-inspect their setup and coordinate resources before running them. The directory
-move does not change the distribution name `scone-client` or `from scone import
-Scone`.
+This produces a review candidate only. It does not update either Rust asset.
+The native console can be edited and validated locally without the Webapp.
+Never replace either embedded page merely to make a build output comparison pass.
 
-## Changes and measurement
+## Data and measurements
 
-Agree on a small milestone and explicit file ownership before parallel edits.
-Preserve unrelated changes; stage explicit files, not whole shared directories.
-Run affected native, API/client and package checks. New adapters must pass
-behavioral tests or document unsupported semantics; implementing a protocol is
-not enough. Derive expected results independently and prove important tests
-fail when the guarded behavior is removed (`scripts/prove-test.sh`), preferably
-in an isolated copy when another agent is editing the engine.
-
-Separate vector-neighbor recall, evidence retrieval, answering and abstention.
-Compare speed at matched retrieval quality; retain raw timings, resource limits,
-dataset/model versions and failures. Report Rust and Python separately. Byte
-reduction is not measured token reduction. Do not publish, deploy, spend on
-services, or destructively clean user data without the agreed authorization.
+Keep credentials, databases, model caches, dependency trees, benchmark output
+and private research out of commits. Use disposable local stores for tests.
+Record dataset/model versions, feature flags, retrieval quality, latency,
+resource use and failures; report Rust and Python measurements separately.
+Keep the inherited LICENSE and CITATION.cff terms intact.

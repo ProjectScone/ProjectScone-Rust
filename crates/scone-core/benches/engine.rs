@@ -75,6 +75,7 @@ fn bench_ingest(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "local-embed")]
 fn bench_recall_onnx(c: &mut Criterion) {
     if std::env::var("SCONE_BENCH_ONNX").is_err() {
         return;
@@ -104,5 +105,8 @@ fn bench_recall_onnx(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "local-embed")]
 criterion_group!(benches, bench_recall, bench_ingest, bench_recall_onnx);
+#[cfg(not(feature = "local-embed"))]
+criterion_group!(benches, bench_recall, bench_ingest);
 criterion_main!(benches);

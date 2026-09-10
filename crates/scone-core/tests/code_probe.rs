@@ -1,3 +1,4 @@
+#![cfg(feature = "local-embed")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! A small code-retrieval probe over this repository's own Rust sources:
 //! twenty questions phrased the way a developer asks, each with the

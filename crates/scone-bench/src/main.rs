@@ -281,6 +281,8 @@ fn run() -> Result<(), String> {
             handoff,
             two_pass,
         } => {
+            #[cfg(not(feature = "local-embed"))]
+            let _ = &embed_model;
             let raw = std::fs::read_to_string(&dataset)
                 .map_err(|e| format!("{dataset}: {e} (run `scone-bench fetch` first)"))?;
             let mut items = parse_dataset(&raw)?;

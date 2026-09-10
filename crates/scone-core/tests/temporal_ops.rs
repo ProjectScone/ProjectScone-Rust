@@ -1,3 +1,4 @@
+#![cfg(feature = "local-embed")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! The two operators that answer from several episodes at once.
 //!
