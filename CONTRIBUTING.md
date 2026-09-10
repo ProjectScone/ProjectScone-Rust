@@ -46,11 +46,11 @@ cargo test --locked -p scone-core --no-default-features --test shared_contract -
 ```
 
 In an independently installed Python framework test environment, run its
-`python/memory/tests/test_cross_language.py` suite with an explicit absolute
+`packages/memory/tests/test_cross_language.py` suite with an explicit absolute
 binary path (adjust the checkout locations to your machine):
 
 ```sh
-cd /path/to/ProjectScone/python/memory
+cd /path/to/ProjectScone/packages/memory
 SCONE_TEST_RUST_ROUNDTRIP=/path/to/ProjectScone-Rust/target/debug/examples/episode_roundtrip \
   .venv/bin/python -m pytest -q tests/test_cross_language.py
 ```
