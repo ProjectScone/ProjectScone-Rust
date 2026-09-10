@@ -1,4 +1,4 @@
-name: Release
+name: Rust release
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -21,30 +21,42 @@ jobs:
             target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v5
-      - uses: ./.github/actions/build-webapp
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Build
-        run: cargo build --release -p scone-cli --target ${{ matrix.target }}
-      - name: Package
+      - name: Build CLI with committed embedded assets
+        run: cargo build --locked --release -p scone-cli --target ${{ matrix.target }}
+      - name: Package CLI and C API declaration
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          package() {
-            STAGE="scone-${GITHUB_REF_NAME}-$1"
-            mkdir -p "$STAGE"
-            cp "target/$1/release/scone" "$STAGE/"
-            cp LICENSE README.md "$STAGE/"
-            cp crates/scone-ffi/include/scone.h "$STAGE/"
-            tar czf "$STAGE.tar.gz" "$STAGE"
-          }
-          # Intel macOS is unsupported for prebuilts: ort ships no ONNX
-          # binaries for x86_64-apple-darwin. Intel users can
-          # `cargo install scone-cli --no-default-features --features pdf`.
-          package "${{ matrix.target }}"
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+          STAGE="scone-${GITHUB_SHA:0:12}-${RELEASE_TARGET}"
+          mkdir -p "$STAGE"
+          cp "target/$RELEASE_TARGET/release/scone" "$STAGE/"
+          cp LICENSE CITATION.cff README.md "$STAGE/"
+          cp crates/scone-ffi/include/scone.h "$STAGE/"
+          printf '%s\n' 'This archive contains the scone CLI and the C API header.' 'It does not include a compiled FFI library. Build one from this source revision with cargo build --locked --release -p scone-ffi.' > "$STAGE/ARTIFACTS.txt"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scone-${{ matrix.target }}
+          path: scone-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scone-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
           files: scone-*.tar.gz

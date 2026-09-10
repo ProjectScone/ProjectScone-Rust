@@ -377,6 +377,7 @@ async fn recalled_memory_carries_its_date() {
 /// needs the real embedder, as the temporal operator tests do; with the
 /// hash embedder every candidate sits below the anchor floor and the
 /// planner would decline for the wrong reason.
+#[cfg(feature = "local-embed")]
 #[tokio::test]
 async fn recall_computes_date_arithmetic_and_shows_its_working() {
     use scone_core::embed::OnnxEmbedder;
