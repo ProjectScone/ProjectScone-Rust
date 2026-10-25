@@ -95,7 +95,11 @@ fn verified_identity(
         digest.update(space.as_bytes());
         digest.update(b"\0");
         digest.update(python_strip(content).as_bytes());
-        let expected = format!("{:x}", digest.finalize());
+        let expected: String = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         if hash.as_str() != Some(expected.as_str()) {
             return Err(
                 "identity is not the default for the named source space; custom identities are unsupported",
