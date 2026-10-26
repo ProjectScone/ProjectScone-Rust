@@ -33,7 +33,9 @@ pub use ingest::{IngestInput, IngestOutcome, ScanReport};
 pub use links::{FactLinkItem, LINK_KINDS};
 pub use portability::ImportReport;
 pub use profile::{Profile, RecentActivity};
-pub use recall::{ContextPack, FactItem, RecallItem, RecallOpts, decompose, order_items};
+pub use recall::{
+    ContextPack, FactItem, LANES, RecallItem, RecallOpts, asked_lanes, decompose, order_items,
+};
 pub use spaces::SpaceReceipt;
 
 #[derive(Debug)]

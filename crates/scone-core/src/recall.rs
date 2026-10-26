@@ -10,6 +10,38 @@ use crate::error::{Result, SconeError};
 
 const CANDIDATES_PER_GENERATOR: usize = 50;
 
+/// The lanes a recall may be asked for, in the order they are named.
+pub const LANES: [&str; 2] = ["vector", "text"];
+
+/// `lanes` as the known lanes asked for, in their own order; refused when
+/// empty or naming a lane recall does not have.
+pub fn asked_lanes(lanes: &[String]) -> Result<Vec<&'static str>> {
+    let mut unknown: Vec<&str> = lanes
+        .iter()
+        .map(String::as_str)
+        .filter(|lane| !LANES.contains(lane))
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
+    if !unknown.is_empty() {
+        return Err(SconeError::InvalidInput(format!(
+            "recall has no lane named {}; its lanes are {}",
+            unknown.join(", "),
+            LANES.join(", ")
+        )));
+    }
+    if lanes.is_empty() {
+        return Err(SconeError::InvalidInput(format!(
+            "ask for at least one lane: {}",
+            LANES.join(", ")
+        )));
+    }
+    Ok(LANES
+        .into_iter()
+        .filter(|lane| lanes.iter().any(|asked| asked == lane))
+        .collect())
+}
+
 /// Interrogative and function words that pollute the BM25 leg of a
 /// natural-language question ("what did I say about X" must rank on X,
 /// not on "what"). The embedding leg keeps the full query — word order
@@ -147,6 +179,9 @@ pub struct RecallOpts {
     pub since: Option<String>,
     /// Only episodes that happened at or before this instant.
     pub until: Option<String>,
+    /// The lanes to run: "vector", "text", or both (the default). A lane
+    /// not named is not run, so text alone makes no embedding call.
+    pub lanes: Vec<String>,
 }
 
 impl Default for RecallOpts {
@@ -162,6 +197,7 @@ impl Default for RecallOpts {
             source_prefix: None,
             since: None,
             until: None,
+            lanes: LANES.map(String::from).to_vec(),
         }
     }
 }
@@ -221,6 +257,8 @@ pub struct ContextPack {
     pub returned_bytes: usize,
     /// Total episode bytes stored in the space at query time.
     pub space_bytes: i64,
+    /// The lanes that answered: those asked for, less any that failed.
+    pub lanes: Vec<&'static str>,
 }
 
 impl ContextPack {
@@ -243,6 +281,8 @@ impl Engine {
         if query.trim().is_empty() {
             return Err(SconeError::InvalidInput("query is empty".into()));
         }
+        let asked = asked_lanes(&opts.lanes)?;
+        let (run_vector, run_text) = (asked.contains(&"vector"), asked.contains(&"text"));
         // Staged index writes become visible here (flush-on-recall).
         self.flush_indexes()?;
         let mut degraded = Vec::new();
@@ -273,27 +313,40 @@ impl Engine {
         if opts.decompose {
             queries.extend(decompose(query));
         }
-        // One embedding call for every query, not one per query.
-        let query_vectors = self
-            .embedder
-            .embed(&queries.iter().map(String::as_str).collect::<Vec<_>>())?;
+        // One embedding call for every query, not one per query, and
+        // none when the vector lane was not asked for.
+        let query_vectors = if run_vector {
+            self.embedder
+                .embed(&queries.iter().map(String::as_str).collect::<Vec<_>>())?
+        } else {
+            Vec::new()
+        };
 
         // Candidate generation: each generator may degrade, never abort.
         let mut fused: HashMap<u64, f32> = HashMap::new();
         let mut similarity: HashMap<u64, f32> = HashMap::new();
+        // The text lane answered if any of its searches ran.
+        let mut text_answered = false;
         for (i, sub) in queries.iter().enumerate() {
             let weight = if i == 0 { 1.0 } else { W_SUBQUERY };
-            let fts_hits = match self.fts.search(
-                space.id() as u64,
-                &bm25_query(sub),
-                CANDIDATES_PER_GENERATOR,
-            ) {
-                Ok(hits) => hits,
-                Err(SconeError::InvalidInput(msg)) => {
-                    degraded.push(format!("fts: {msg}"));
-                    Vec::new()
+            let fts_hits = if !run_text {
+                Vec::new()
+            } else {
+                match self.fts.search(
+                    space.id() as u64,
+                    &bm25_query(sub),
+                    CANDIDATES_PER_GENERATOR,
+                ) {
+                    Ok(hits) => {
+                        text_answered = true;
+                        hits
+                    }
+                    Err(SconeError::InvalidInput(msg)) => {
+                        degraded.push(format!("fts: {msg}"));
+                        Vec::new()
+                    }
+                    Err(other) => return Err(other),
                 }
-                Err(other) => return Err(other),
             };
             let vec_hits = match query_vectors.get(i) {
                 Some(qv) => self.vectors.search(qv, CANDIDATES_PER_GENERATOR)?,
@@ -314,6 +367,17 @@ impl Engine {
                     *fused.entry(*chunk_id).or_insert(0.0) += weight / (RRF_K + rank as f32 + 1.0);
                 }
             }
+        }
+        let lanes: Vec<&'static str> = asked
+            .iter()
+            .copied()
+            .filter(|lane| *lane == "vector" || text_answered)
+            .collect();
+        if lanes.is_empty() {
+            return Err(SconeError::InvalidInput(format!(
+                "the only recall lane asked for, text, failed: {}",
+                degraded.join("; ")
+            )));
         }
         let max_fused = fused
             .values()
@@ -566,6 +630,7 @@ impl Engine {
             degraded,
             returned_bytes,
             space_bytes,
+            lanes,
         })
     }
 

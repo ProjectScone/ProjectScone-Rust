@@ -99,6 +99,9 @@ enum Cmd {
         /// Only episodes that happened at or before this RFC 3339 instant
         #[arg(long)]
         until: Option<String>,
+        /// The lanes to run, comma separated: vector, text, or both
+        #[arg(long, value_delimiter = ',', default_values_t = scone_core::LANES.map(String::from))]
+        lanes: Vec<String>,
     },
     /// Claude Code hook handler (reads hook JSON on stdin, fail-open)
     Hook {
@@ -528,6 +531,7 @@ fn run() -> Result<(), String> {
             source_prefix,
             since,
             until,
+            lanes,
         } => {
             let space = auth::resolve(&mut engine, &cli.space, true).map_err(|e| e.to_string())?;
             let opts = RecallOpts {
@@ -539,6 +543,7 @@ fn run() -> Result<(), String> {
                 source_prefix: source_prefix.clone(),
                 since: since.clone(),
                 until: until.clone(),
+                lanes: lanes.clone(),
                 ..Default::default()
             };
             let pack = engine
@@ -546,6 +551,9 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             for warning in &pack.degraded {
                 eprintln!("degraded: {warning}");
+            }
+            if pack.lanes.len() < scone_core::LANES.len() {
+                println!("lanes: {}", pack.lanes.join(", "));
             }
             for f in &pack.facts {
                 println!(

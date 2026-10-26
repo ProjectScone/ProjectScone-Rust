@@ -4,6 +4,7 @@
     "implementation": "rust",
     "features": {
       "recall": true,
+      "recall.lanes": true,
       "facts.read": true,
       "facts.review": true,
       "facts.close": true,

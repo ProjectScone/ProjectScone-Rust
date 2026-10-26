@@ -258,7 +258,7 @@ async fn get_capabilities(
         "schema_version": 1,
         "implementation": "rust",
         "features": {
-            "recall": true, "facts.read": true, "facts.review": true,
+            "recall": true, "recall.lanes": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": false, "facts.include": false,
             "events.read": true, "metrics.read": false, "scopes.read": false,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
@@ -445,6 +445,18 @@ struct RecallQuery {
     as_of: Option<String>,
     /// Comma-separated tag filter (AND semantics).
     tags: Option<String>,
+    /// Comma-separated lanes to run: vector, text, or both (the default).
+    lanes: Option<String>,
+}
+
+/// A comma-separated list, trimmed, with empty entries dropped.
+fn comma_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn get_recall(
@@ -469,6 +481,11 @@ async fn get_recall(
             .as_deref()
             .map(|t| t.split(',').map(|x| x.trim().to_owned()).collect())
             .unwrap_or_default(),
+        lanes: query
+            .lanes
+            .as_deref()
+            .map(comma_list)
+            .unwrap_or_else(|| scone_core::LANES.map(String::from).to_vec()),
         ..Default::default()
     };
     match with_engine(&state, &headers, |engine, space| {
@@ -489,6 +506,7 @@ async fn get_recall(
                 "source": i.source, "created_at": i.created_at,
             })).collect::<Vec<_>>(),
             "degraded": pack.degraded,
+            "lanes": pack.lanes,
             "returned_bytes": pack.returned_bytes,
             "space_bytes": pack.space_bytes,
             "context_reduction": pack.context_reduction(),

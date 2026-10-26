@@ -245,6 +245,7 @@ impl SconeMcp {
                     source_prefix: p.source_prefix.clone(),
                     since: p.since.clone(),
                     until: p.until.clone(),
+                    ..Default::default()
                 },
             )?;
             Ok((computed, profile, pack))
