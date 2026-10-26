@@ -45,15 +45,23 @@ cargo build --locked -p scone-core --no-default-features --example episode_round
 cargo test --locked -p scone-core --no-default-features --test shared_contract --test portability
 ```
 
-In an independently installed Python framework test environment, run its
-`packages/memory/tests/test_cross_language.py` suite with an explicit absolute
-binary path (adjust the checkout locations to your machine):
+In a Python framework checkout with its dependencies installed, run its
+conformance runner with an explicit absolute binary path (adjust the checkout
+locations to your machine):
 
 ```sh
-cd /path/to/ProjectScone/packages/memory
+cd /path/to/ProjectScone
 SCONE_TEST_RUST_ROUNDTRIP=/path/to/ProjectScone-Rust/target/debug/examples/episode_roundtrip \
-  .venv/bin/python -m pytest -q tests/test_cross_language.py
+  zsh scripts/episode-conformance.sh
 ```
+
+The runner checks the tree it lives in, exchanges real exports in both
+directions through `packages/memory/tests/integrations/test_cross_language.py`,
+and fails when the probe is missing rather than letting the cross-runtime cases
+skip. Set `SCONE_PYTHON` when the checkout has no project virtualenv; pass
+`--ci` to run only the backends CI installs. A skipped case is listed with its
+reason: a backend not installed is a gap in that machine's coverage, and a
+skipped probe case means nothing crossed the runtime boundary.
 
 The Python repository owns its fixture copies and its conformance runner; Rust
 CI does not install Python or infer a sibling path. Recheck fixture byte identity

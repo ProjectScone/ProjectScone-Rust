@@ -185,6 +185,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for identity in identities {
         eprintln!("SCONE_EPISODE_REPORT {identity}");
     }
-    print!("{exported}");
+    // The shared profile is the evidence both engines keep. A native export
+    // also carries Rust's blake3 `hash`, which the framework does not store
+    // and so refuses on import; it is checked on the way in and left out here.
+    for line in exported.lines() {
+        let mut record: Value = serde_json::from_str(line)?;
+        if record["type"] == "episode"
+            && let Some(object) = record.as_object_mut()
+        {
+            object.remove("hash");
+        }
+        println!("{record}");
+    }
     Ok(())
 }
