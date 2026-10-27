@@ -5,6 +5,7 @@
     "features": {
       "recall": true,
       "recall.lanes": true,
+      "recall.phrases": true,
       "facts.read": true,
       "facts.review": true,
       "facts.close": true,

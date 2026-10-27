@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::Engine;
 use crate::auth::ScopedSpace;
 use crate::error::{Result, SconeError};
+use crate::phrases::{self, Dropped, PhraseTrace, Phrases};
 
 const CANDIDATES_PER_GENERATOR: usize = 50;
 
@@ -182,6 +183,12 @@ pub struct RecallOpts {
     /// The lanes to run: "vector", "text", or both (the default). A lane
     /// not named is not run, so text alone makes no embedding call.
     pub lanes: Vec<String>,
+    /// Phrases every returned passage must hold, and phrases none may,
+    /// matched as whole words whatever the case and punctuation. Checked
+    /// across the candidates before the limit, so a passage that fails
+    /// gives its place to one that holds.
+    pub require: Vec<String>,
+    pub exclude: Vec<String>,
 }
 
 impl Default for RecallOpts {
@@ -198,6 +205,8 @@ impl Default for RecallOpts {
             since: None,
             until: None,
             lanes: LANES.map(String::from).to_vec(),
+            require: Vec::new(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -259,6 +268,8 @@ pub struct ContextPack {
     pub space_bytes: i64,
     /// The lanes that answered: those asked for, less any that failed.
     pub lanes: Vec<&'static str>,
+    /// What required and excluded phrases dropped; `None` without phrases.
+    pub phrases: Option<PhraseTrace>,
 }
 
 impl ContextPack {
@@ -283,6 +294,7 @@ impl Engine {
         }
         let asked = asked_lanes(&opts.lanes)?;
         let (run_vector, run_text) = (asked.contains(&"vector"), asked.contains(&"text"));
+        phrases::check(&opts.require, &opts.exclude)?;
         // Staged index writes become visible here (flush-on-recall).
         self.flush_indexes()?;
         let mut degraded = Vec::new();
@@ -327,6 +339,8 @@ impl Engine {
         let mut similarity: HashMap<u64, f32> = HashMap::new();
         // The text lane answered if any of its searches ran.
         let mut text_answered = false;
+        // A lane that returned a full window may have left passages unread.
+        let mut window_full = false;
         for (i, sub) in queries.iter().enumerate() {
             let weight = if i == 0 { 1.0 } else { W_SUBQUERY };
             let fts_hits = if !run_text {
@@ -352,6 +366,8 @@ impl Engine {
                 Some(qv) => self.vectors.search(qv, CANDIDATES_PER_GENERATOR)?,
                 None => Vec::new(),
             };
+            window_full |= fts_hits.len() >= CANDIDATES_PER_GENERATOR
+                || vec_hits.len() >= CANDIDATES_PER_GENERATOR;
             // Keep the vector lane's cosine similarity before fusion
             // throws it away. Rank fusion answers "which of these is
             // best", never "is any of this about the question", and
@@ -490,6 +506,30 @@ impl Engine {
                 });
             }
         }
+        // Phrases: across every verified candidate, before the reranker,
+        // the per-episode cap and the limit.
+        let mut phrase_trace = None;
+        if !opts.require.is_empty() || !opts.exclude.is_empty() {
+            let wanted = Phrases::new(&opts.require, &opts.exclude);
+            let mut trace = PhraseTrace {
+                required: opts.require.clone(),
+                excluded: opts.exclude.clone(),
+                checked: items.len(),
+                ..Default::default()
+            };
+            items.retain(|item| match wanted.check(&item.text) {
+                None => true,
+                Some(Dropped::Required) => {
+                    trace.dropped_required += 1;
+                    false
+                }
+                Some(Dropped::Excluded) => {
+                    trace.dropped_excluded += 1;
+                    false
+                }
+            });
+            phrase_trace = Some(trace);
+        }
         // Cross-encoder pass: rescore every surviving candidate against
         // the query jointly. Rank fusion proposes; the reranker disposes.
         if let Some(reranker) = &self.reranker
@@ -541,6 +581,9 @@ impl Engine {
             picked.push(item);
         }
         let items = picked;
+        if let Some(trace) = phrase_trace.as_mut() {
+            trace.finish(items.len(), opts.limit, window_full);
+        }
 
         // Neighbor expansion: answers often live one chunk over. Widen each
         // kept item to its adjacent chunks (contiguous byte spans, so this
@@ -631,6 +674,7 @@ impl Engine {
             returned_bytes,
             space_bytes,
             lanes,
+            phrases: phrase_trace,
         })
     }
 

@@ -22,6 +22,7 @@ pdf = ["scone-core/pdf"]
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 clap = { version = "4", features = ["derive"] }
+form_urlencoded = "1"
 rmcp = { version = "3", features = ["server", "transport-io", "schemars"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }

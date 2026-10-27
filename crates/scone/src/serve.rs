@@ -258,7 +258,7 @@ async fn get_capabilities(
         "schema_version": 1,
         "implementation": "rust",
         "features": {
-            "recall": true, "recall.lanes": true, "facts.read": true, "facts.review": true,
+            "recall": true, "recall.lanes": true, "recall.phrases": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": false, "facts.include": false,
             "events.read": true, "metrics.read": false, "scopes.read": false,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
@@ -449,6 +449,15 @@ struct RecallQuery {
     lanes: Option<String>,
 }
 
+/// Every value given for `name`, in order: a parameter that repeats, such
+/// as one phrase per `require`.
+fn repeated(raw: Option<&str>, name: &str) -> Vec<String> {
+    form_urlencoded::parse(raw.unwrap_or_default().as_bytes())
+        .filter(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+        .collect()
+}
+
 /// A comma-separated list, trimmed, with empty entries dropped.
 fn comma_list(value: &str) -> Vec<String> {
     value
@@ -463,6 +472,7 @@ async fn get_recall(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Query(query): Query<RecallQuery>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Response {
     if query.q.trim().is_empty() || query.q.len() > MAX_QUERY {
         return err(
@@ -486,6 +496,8 @@ async fn get_recall(
             .as_deref()
             .map(comma_list)
             .unwrap_or_else(|| scone_core::LANES.map(String::from).to_vec()),
+        require: repeated(raw.as_deref(), "require"),
+        exclude: repeated(raw.as_deref(), "exclude"),
         ..Default::default()
     };
     match with_engine(&state, &headers, |engine, space| {
@@ -493,7 +505,8 @@ async fn get_recall(
         let event_id = engine.record_recall_evidence(space, &query.q, &pack)?;
         Ok((pack, event_id))
     }) {
-        Ok((pack, event_id)) => Json(serde_json::json!({
+        Ok((pack, event_id)) => {
+            let mut body = serde_json::json!({
             "event_id":event_id,
             "facts": pack.facts.iter().map(|f| serde_json::json!({
                 "fact_id": f.fact_id, "subject": f.subject, "predicate": f.predicate,
@@ -510,8 +523,12 @@ async fn get_recall(
             "returned_bytes": pack.returned_bytes,
             "space_bytes": pack.space_bytes,
             "context_reduction": pack.context_reduction(),
-        }))
-        .into_response(),
+            });
+            if let Some(trace) = &pack.phrases {
+                body["phrases"] = trace.json();
+            }
+            Json(body).into_response()
+        }
         Err(response) => response,
     }
 }

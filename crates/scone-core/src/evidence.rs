@@ -180,6 +180,7 @@ impl Engine {
             "items":pack.items.iter().map(|i|json!({"chunk_id":i.chunk_id,"episode_id":i.episode_id,"score":i.score,"similarity":i.similarity})).collect::<Vec<_>>(),
             "fact_ids":pack.facts.iter().map(|f|f.fact_id).collect::<Vec<_>>(),"returned_bytes":pack.returned_bytes,
             "lanes":pack.lanes,
+            "phrases":pack.phrases.as_ref().map(crate::phrases::PhraseTrace::json),
             "coverage":"HTTP recall; returned items only; lane ranks unavailable"
         }),None)?;
         receipt["recorded"]

@@ -111,3 +111,38 @@ async fn the_lanes_are_asked_for_and_reported() {
     let (_, events) = call(&app, "GET", "/v1/events?kind=recall&limit=1", None).await;
     assert_eq!(events["events"][0]["payload"]["lanes"], json!(["text"]));
 }
+
+#[tokio::test]
+async fn phrases_repeat_one_per_parameter() {
+    let notes: Vec<&str> = MATCHING.iter().chain(&UNRELATED).copied().collect();
+    let (_dir, app) = app_with(&notes).await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/v1/recall?q=crane%20survey&require=crane%20survey&require=JIB&exclude=rust",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut expected = vec![MATCHING[1].to_owned(), MATCHING[2].to_owned()];
+    expected.sort_unstable();
+    assert_eq!(texts(&body), expected);
+    assert_eq!(body["phrases"]["required"], json!(["crane survey", "JIB"]));
+    assert_eq!(body["phrases"]["dropped_excluded"], 1);
+    let (_, plain) = call(&app, "GET", "/v1/recall?q=crane%20survey", None).await;
+    assert!(plain.get("phrases").is_none());
+    let (status, refused) = call(
+        &app,
+        "GET",
+        "/v1/recall?q=crane&require=jib&exclude=Jib",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("both required and excluded")
+    );
+}

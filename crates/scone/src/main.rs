@@ -102,6 +102,12 @@ enum Cmd {
         /// The lanes to run, comma separated: vector, text, or both
         #[arg(long, value_delimiter = ',', default_values_t = scone_core::LANES.map(String::from))]
         lanes: Vec<String>,
+        /// A phrase every passage must hold, as whole words (repeatable)
+        #[arg(long)]
+        require: Vec<String>,
+        /// A phrase no passage may hold (repeatable)
+        #[arg(long)]
+        exclude: Vec<String>,
     },
     /// Claude Code hook handler (reads hook JSON on stdin, fail-open)
     Hook {
@@ -532,6 +538,8 @@ fn run() -> Result<(), String> {
             since,
             until,
             lanes,
+            require,
+            exclude,
         } => {
             let space = auth::resolve(&mut engine, &cli.space, true).map_err(|e| e.to_string())?;
             let opts = RecallOpts {
@@ -544,6 +552,8 @@ fn run() -> Result<(), String> {
                 since: since.clone(),
                 until: until.clone(),
                 lanes: lanes.clone(),
+                require: require.clone(),
+                exclude: exclude.clone(),
                 ..Default::default()
             };
             let pack = engine
@@ -554,6 +564,9 @@ fn run() -> Result<(), String> {
             }
             if pack.lanes.len() < scone_core::LANES.len() {
                 println!("lanes: {}", pack.lanes.join(", "));
+            }
+            if let Some(trace) = &pack.phrases {
+                println!("phrases: {}", trace.why);
             }
             for f in &pack.facts {
                 println!(
