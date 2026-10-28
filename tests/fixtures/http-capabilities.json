@@ -6,6 +6,7 @@
       "recall": true,
       "recall.lanes": true,
       "recall.phrases": true,
+      "recall.diversity": true,
       "facts.read": true,
       "facts.review": true,
       "facts.close": true,

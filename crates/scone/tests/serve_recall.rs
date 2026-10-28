@@ -146,3 +146,26 @@ async fn phrases_repeat_one_per_parameter() {
             .contains("both required and excluded")
     );
 }
+
+#[tokio::test]
+async fn diversity_is_asked_for_and_reported() {
+    let notes: Vec<&str> = MATCHING.iter().chain(&UNRELATED).copied().collect();
+    let (_dir, app) = app_with(&notes).await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/v1/recall?q=crane%20survey&limit=2&diversity=0.7",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["diversity"]["weight"], 0.7);
+    assert_eq!(body["diversity"]["vectors"], "index");
+    let (_, plain) = call(&app, "GET", "/v1/recall?q=crane%20survey&limit=2", None).await;
+    assert!(plain.get("diversity").is_none());
+    let (status, refused) = call(&app, "GET", "/v1/recall?q=crane&diversity=2", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(refused["error"].as_str().unwrap().contains("from 0 to 1"));
+    let (status, _) = call(&app, "GET", "/v1/recall?q=crane&rerank=false", None).await;
+    assert_eq!(status, StatusCode::OK);
+}

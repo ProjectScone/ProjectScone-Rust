@@ -108,6 +108,12 @@ enum Cmd {
         /// A phrase no passage may hold (repeatable)
         #[arg(long)]
         exclude: Vec<String>,
+        /// Keep near-copies from taking several places: a weight from 0 to 1
+        #[arg(long)]
+        diversity: Option<f64>,
+        /// Leave the reranker out of this search
+        #[arg(long)]
+        no_rerank: bool,
     },
     /// Claude Code hook handler (reads hook JSON on stdin, fail-open)
     Hook {
@@ -540,6 +546,8 @@ fn run() -> Result<(), String> {
             lanes,
             require,
             exclude,
+            diversity,
+            no_rerank,
         } => {
             let space = auth::resolve(&mut engine, &cli.space, true).map_err(|e| e.to_string())?;
             let opts = RecallOpts {
@@ -554,6 +562,8 @@ fn run() -> Result<(), String> {
                 lanes: lanes.clone(),
                 require: require.clone(),
                 exclude: exclude.clone(),
+                diversity: *diversity,
+                rerank: !no_rerank,
                 ..Default::default()
             };
             let pack = engine
@@ -567,6 +577,9 @@ fn run() -> Result<(), String> {
             }
             if let Some(trace) = &pack.phrases {
                 println!("phrases: {}", trace.why);
+            }
+            if let Some(trace) = &pack.diversity {
+                println!("diversity: {}", trace.why);
             }
             for f in &pack.facts {
                 println!(

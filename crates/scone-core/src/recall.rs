@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use crate::Engine;
 use crate::auth::ScopedSpace;
+use crate::diversity::{self, DiversityTrace, MAX_DIVERSIFIED};
 use crate::error::{Result, SconeError};
 use crate::phrases::{self, Dropped, PhraseTrace, Phrases};
 
@@ -189,6 +190,12 @@ pub struct RecallOpts {
     /// gives its place to one that holds.
     pub require: Vec<String>,
     pub exclude: Vec<String>,
+    /// A weight from 0 to 1: fill the answer's places by maximal marginal
+    /// relevance, so near-copies do not take several. A reranker would
+    /// undo it, so it is refused beside one unless `rerank` is off.
+    pub diversity: Option<f64>,
+    /// Use the attached reranker, if any. Off for this call only.
+    pub rerank: bool,
 }
 
 impl Default for RecallOpts {
@@ -207,6 +214,8 @@ impl Default for RecallOpts {
             lanes: LANES.map(String::from).to_vec(),
             require: Vec::new(),
             exclude: Vec::new(),
+            diversity: None,
+            rerank: true,
         }
     }
 }
@@ -270,6 +279,8 @@ pub struct ContextPack {
     pub lanes: Vec<&'static str>,
     /// What required and excluded phrases dropped; `None` without phrases.
     pub phrases: Option<PhraseTrace>,
+    /// How diversity filled the places; `None` unless it was asked for.
+    pub diversity: Option<DiversityTrace>,
 }
 
 impl ContextPack {
@@ -295,6 +306,17 @@ impl Engine {
         let asked = asked_lanes(&opts.lanes)?;
         let (run_vector, run_text) = (asked.contains(&"vector"), asked.contains(&"text"));
         phrases::check(&opts.require, &opts.exclude)?;
+        let reranking = opts.rerank && self.reranker.is_some();
+        if let Some(weight) = opts.diversity {
+            diversity::check(weight)?;
+            if reranking {
+                return Err(SconeError::InvalidInput(
+                    "diversity and a reranker both set the order, and the reranker would undo \
+                     the diversity; ask for rerank=false with it"
+                        .into(),
+                ));
+            }
+        }
         // Staged index writes become visible here (flush-on-recall).
         self.flush_indexes()?;
         let mut degraded = Vec::new();
@@ -532,7 +554,7 @@ impl Engine {
         }
         // Cross-encoder pass: rescore every surviving candidate against
         // the query jointly. Rank fusion proposes; the reranker disposes.
-        if let Some(reranker) = &self.reranker
+        if let Some(reranker) = self.reranker.as_ref().filter(|_| opts.rerank)
             && !items.is_empty()
         {
             let docs: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
@@ -552,6 +574,12 @@ impl Engine {
         }
 
         order_items(&mut items);
+        let mut diversity_trace = None;
+        if let Some(weight) = opts.diversity {
+            let (ordered, trace) = self.diversified(items, weight, opts.limit, &mut degraded);
+            items = ordered;
+            diversity_trace = Some(trace);
+        }
 
         // Episode diversity: one strong episode must not hog the top slots
         // with many of its chunks; multi-evidence questions need distinct
@@ -675,7 +703,102 @@ impl Engine {
             space_bytes,
             lanes,
             phrases: phrase_trace,
+            diversity: diversity_trace,
         })
+    }
+
+    /// `items`, in relevance order, with their first places filled by
+    /// maximal marginal relevance (see `diversity`).
+    fn diversified(
+        &self,
+        items: Vec<RecallItem>,
+        weight: f64,
+        limit: usize,
+        degraded: &mut Vec<String>,
+    ) -> (Vec<RecallItem>, DiversityTrace) {
+        let mut considered = items;
+        let rest = considered.split_off(considered.len().min(MAX_DIVERSIFIED));
+        let mut trace = DiversityTrace {
+            weight,
+            candidates: considered.len(),
+            not_diversified: rest.len(),
+            vectors: "index",
+            replaced: 0,
+            why: String::new(),
+        };
+        let vectors = match self.candidate_vectors(&considered) {
+            Ok((vectors, source)) => {
+                trace.vectors = source;
+                vectors
+            }
+            Err(e) => {
+                degraded.push(format!("diversity: {e}"));
+                trace.vectors = "unavailable";
+                trace.why = "no vectors to compare, so relevance order was kept".into();
+                considered.extend(rest);
+                return (considered, trace);
+            }
+        };
+        let scores: Vec<f32> = considered.iter().map(|item| item.score).collect();
+        let order = diversity::mmr_order(&scores, &vectors, weight, 2 * limit);
+        let before: Vec<i64> = considered.iter().take(limit).map(|i| i.chunk_id).collect();
+        let mut slots: Vec<Option<RecallItem>> = considered.into_iter().map(Some).collect();
+        let mut ordered: Vec<RecallItem> = order.iter().filter_map(|&i| slots[i].take()).collect();
+        trace.replaced = ordered
+            .iter()
+            .take(limit)
+            .filter(|item| !before.contains(&item.chunk_id))
+            .count();
+        trace.why = format!(
+            "{} of the first {limit} places went to passages less like those above them",
+            trace.replaced
+        );
+        if !rest.is_empty() {
+            trace.why.push_str(&format!(
+                "; {} candidates past the budget of {MAX_DIVERSIFIED} kept relevance order",
+                rest.len()
+            ));
+        }
+        ordered.extend(rest);
+        (ordered, trace)
+    }
+
+    /// One vector per candidate, all from one source so each likeness is
+    /// on one scale: the stored embeddings when every candidate has one,
+    /// otherwise the candidates embedded once.
+    fn candidate_vectors(&self, items: &[RecallItem]) -> Result<(Vec<Vec<f32>>, &'static str)> {
+        let dim = self.embedder.dim();
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT embedding FROM chunks WHERE id = ?1")?;
+        let mut stored = Vec::with_capacity(items.len());
+        for item in items {
+            let blob: Option<Vec<u8>> = stmt.query_row([item.chunk_id], |r| r.get(0))?;
+            match blob {
+                Some(bytes) if bytes.len() == dim * 4 => stored.push(
+                    bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| f32::from_le_bytes(*c))
+                        .collect(),
+                ),
+                _ => break,
+            }
+        }
+        if stored.len() == items.len() {
+            return Ok((stored, "index"));
+        }
+        let texts: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
+        let embedded = self.embedder.embed(&texts)?;
+        if embedded.len() != items.len() {
+            return Err(SconeError::Embed(format!(
+                "{} vectors came back for {} candidates",
+                embedded.len(),
+                items.len()
+            )));
+        }
+        Ok((embedded, "embedded"))
     }
 
     fn recall_facts(

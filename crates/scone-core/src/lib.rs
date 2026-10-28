@@ -7,6 +7,7 @@ pub mod auth;
 pub mod chunker;
 mod db;
 pub mod distill;
+pub mod diversity;
 pub mod embed;
 mod error;
 pub mod evidence;

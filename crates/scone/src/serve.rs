@@ -258,7 +258,7 @@ async fn get_capabilities(
         "schema_version": 1,
         "implementation": "rust",
         "features": {
-            "recall": true, "recall.lanes": true, "recall.phrases": true, "facts.read": true, "facts.review": true,
+            "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": false, "facts.include": false,
             "events.read": true, "metrics.read": false, "scopes.read": false,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
@@ -447,6 +447,10 @@ struct RecallQuery {
     tags: Option<String>,
     /// Comma-separated lanes to run: vector, text, or both (the default).
     lanes: Option<String>,
+    /// A weight from 0 to 1 that keeps near-copies from taking several places.
+    diversity: Option<f64>,
+    /// Use the attached reranker, if any (the default); false for this call only.
+    rerank: Option<bool>,
 }
 
 /// Every value given for `name`, in order: a parameter that repeats, such
@@ -498,6 +502,8 @@ async fn get_recall(
             .unwrap_or_else(|| scone_core::LANES.map(String::from).to_vec()),
         require: repeated(raw.as_deref(), "require"),
         exclude: repeated(raw.as_deref(), "exclude"),
+        diversity: query.diversity,
+        rerank: query.rerank.unwrap_or(true),
         ..Default::default()
     };
     match with_engine(&state, &headers, |engine, space| {
@@ -526,6 +532,9 @@ async fn get_recall(
             });
             if let Some(trace) = &pack.phrases {
                 body["phrases"] = trace.json();
+            }
+            if let Some(trace) = &pack.diversity {
+                body["diversity"] = trace.json();
             }
             Json(body).into_response()
         }

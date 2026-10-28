@@ -181,6 +181,7 @@ impl Engine {
             "fact_ids":pack.facts.iter().map(|f|f.fact_id).collect::<Vec<_>>(),"returned_bytes":pack.returned_bytes,
             "lanes":pack.lanes,
             "phrases":pack.phrases.as_ref().map(crate::phrases::PhraseTrace::json),
+            "diversity":pack.diversity.as_ref().map(crate::diversity::DiversityTrace::json),
             "coverage":"HTTP recall; returned items only; lane ranks unavailable"
         }),None)?;
         receipt["recorded"]
