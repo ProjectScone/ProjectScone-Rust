@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod chunker;
+pub mod cutoff;
 mod db;
 pub mod distill;
 pub mod diversity;

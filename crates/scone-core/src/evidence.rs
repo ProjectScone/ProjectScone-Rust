@@ -182,6 +182,7 @@ impl Engine {
             "lanes":pack.lanes,
             "phrases":pack.phrases.as_ref().map(crate::phrases::PhraseTrace::json),
             "diversity":pack.diversity.as_ref().map(crate::diversity::DiversityTrace::json),
+            "cutoff":pack.cutoff.as_ref().map(crate::cutoff::CutoffTrace::json),
             "coverage":"HTTP recall; returned items only; lane ranks unavailable"
         }),None)?;
         receipt["recorded"]

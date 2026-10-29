@@ -258,7 +258,7 @@ async fn get_capabilities(
         "schema_version": 1,
         "implementation": "rust",
         "features": {
-            "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "facts.read": true, "facts.review": true,
+            "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "recall.cutoff": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": false, "facts.include": false,
             "events.read": true, "metrics.read": false, "scopes.read": false,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
@@ -451,6 +451,9 @@ struct RecallQuery {
     diversity: Option<f64>,
     /// Use the attached reranker, if any (the default); false for this call only.
     rerank: Option<bool>,
+    /// End the answer where the vector scores fall away. Vector lane only,
+    /// no reranker; the question is then not decomposed.
+    cutoff: Option<bool>,
 }
 
 /// Every value given for `name`, in order: a parameter that repeats, such
@@ -484,12 +487,14 @@ async fn get_recall(
             format!("q must be 1..={MAX_QUERY} chars"),
         );
     }
+    let cutoff = query.cutoff.unwrap_or(false);
     let opts = RecallOpts {
         limit: query.limit.unwrap_or(10).clamp(1, 50),
         budget_bytes: None,
         as_of: query.as_of.clone(),
         expand_neighbors: false,
-        decompose: true,
+        // The cut was measured on the question as asked.
+        decompose: !cutoff,
         tags: query
             .tags
             .as_deref()
@@ -504,6 +509,7 @@ async fn get_recall(
         exclude: repeated(raw.as_deref(), "exclude"),
         diversity: query.diversity,
         rerank: query.rerank.unwrap_or(true),
+        cutoff,
         ..Default::default()
     };
     match with_engine(&state, &headers, |engine, space| {
@@ -522,7 +528,7 @@ async fn get_recall(
             })).collect::<Vec<_>>(),
             "items": pack.items.iter().map(|i| serde_json::json!({
                 "episode_id": i.episode_id, "chunk_id":i.chunk_id, "text": i.text, "score": i.score,
-                "source": i.source, "created_at": i.created_at,
+                "similarity": i.similarity, "source": i.source, "created_at": i.created_at,
             })).collect::<Vec<_>>(),
             "degraded": pack.degraded,
             "lanes": pack.lanes,
@@ -535,6 +541,9 @@ async fn get_recall(
             }
             if let Some(trace) = &pack.diversity {
                 body["diversity"] = trace.json();
+            }
+            if let Some(trace) = &pack.cutoff {
+                body["cutoff"] = trace.json();
             }
             Json(body).into_response()
         }

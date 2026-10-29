@@ -114,6 +114,9 @@ enum Cmd {
         /// Leave the reranker out of this search
         #[arg(long)]
         no_rerank: bool,
+        /// Stop where the vector scores fall away (needs --lanes vector)
+        #[arg(long)]
+        cutoff: bool,
     },
     /// Claude Code hook handler (reads hook JSON on stdin, fail-open)
     Hook {
@@ -548,6 +551,7 @@ fn run() -> Result<(), String> {
             exclude,
             diversity,
             no_rerank,
+            cutoff,
         } => {
             let space = auth::resolve(&mut engine, &cli.space, true).map_err(|e| e.to_string())?;
             let opts = RecallOpts {
@@ -564,6 +568,7 @@ fn run() -> Result<(), String> {
                 exclude: exclude.clone(),
                 diversity: *diversity,
                 rerank: !no_rerank,
+                cutoff: *cutoff,
                 ..Default::default()
             };
             let pack = engine
@@ -580,6 +585,9 @@ fn run() -> Result<(), String> {
             }
             if let Some(trace) = &pack.diversity {
                 println!("diversity: {}", trace.why);
+            }
+            if let Some(trace) = &pack.cutoff {
+                println!("cutoff: {}", trace.why);
             }
             for f in &pack.facts {
                 println!(

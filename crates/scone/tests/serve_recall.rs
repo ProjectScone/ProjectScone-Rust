@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const MATCHING: [&str; 3] = [
-    "The crane survey found rust on the jib.",
-    "The crane survey found grease missing on the jib.",
+    "The crane survey found rust on the jib today",
+    "The crane survey found grease missing on the jib today",
     "The crane survey found the jib bolts loose.",
 ];
 const UNRELATED: [&str; 4] = [
@@ -168,4 +168,30 @@ async fn diversity_is_asked_for_and_reported() {
     assert!(refused["error"].as_str().unwrap().contains("from 0 to 1"));
     let (status, _) = call(&app, "GET", "/v1/recall?q=crane&rerank=false", None).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_cut_is_asked_for_over_http() {
+    let notes: Vec<&str> = MATCHING.iter().chain(&UNRELATED).copied().collect();
+    let (_dir, app) = app_with(&notes).await;
+    let base = "/v1/recall?q=crane%20survey%20jib&limit=5&lanes=vector";
+    let (status, made) = call(&app, "GET", &format!("{base}&cutoff=true"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(made["cutoff"]["dropped"], 2);
+    let mut expected: Vec<String> = MATCHING.iter().map(|s| s.to_string()).collect();
+    expected.sort_unstable();
+    assert_eq!(texts(&made), expected);
+    let threshold = made["cutoff"]["threshold"].as_f64().unwrap();
+    assert!(
+        made["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["similarity"].as_f64().unwrap() >= threshold)
+    );
+    let (_, plain) = call(&app, "GET", base, None).await;
+    assert!(plain.get("cutoff").is_none());
+    assert_eq!(plain["items"].as_array().unwrap().len(), 5);
+    let (status, _) = call(&app, "GET", "/v1/recall?q=crane&cutoff=true", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

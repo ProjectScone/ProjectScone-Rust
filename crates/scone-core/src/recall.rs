@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use crate::Engine;
 use crate::auth::ScopedSpace;
+use crate::cutoff::{self, CutoffTrace};
 use crate::diversity::{self, DiversityTrace, MAX_DIVERSIFIED};
 use crate::error::{Result, SconeError};
 use crate::phrases::{self, Dropped, PhraseTrace, Phrases};
@@ -196,6 +197,12 @@ pub struct RecallOpts {
     pub diversity: Option<f64>,
     /// Use the attached reranker, if any. Off for this call only.
     pub rerank: bool,
+    /// Return fewer than `limit` passages when the vector lane's scores
+    /// fall away after the first few (see `cutoff`). Measured, it helps
+    /// questions with one answer passage and hurts two-hop ones; it needs
+    /// the vector lane alone, no reranker and no decomposition, the
+    /// setting it was measured in.
+    pub cutoff: bool,
 }
 
 impl Default for RecallOpts {
@@ -216,6 +223,7 @@ impl Default for RecallOpts {
             exclude: Vec::new(),
             diversity: None,
             rerank: true,
+            cutoff: false,
         }
     }
 }
@@ -281,6 +289,8 @@ pub struct ContextPack {
     pub phrases: Option<PhraseTrace>,
     /// How diversity filled the places; `None` unless it was asked for.
     pub diversity: Option<DiversityTrace>,
+    /// Where `cutoff` cut the answer; `None` unless it was asked for.
+    pub cutoff: Option<CutoffTrace>,
 }
 
 impl ContextPack {
@@ -307,6 +317,28 @@ impl Engine {
         let (run_vector, run_text) = (asked.contains(&"vector"), asked.contains(&"text"));
         phrases::check(&opts.require, &opts.exclude)?;
         let reranking = opts.rerank && self.reranker.is_some();
+        if opts.cutoff {
+            // Measured on cosines alone: a fused, reranked or decomposed
+            // order is a different list, and a text passage has no cosine.
+            let refused = if asked != ["vector"] {
+                Some(
+                    "cutoff reads where the vector lane's scores fall; ask for lanes=vector with it",
+                )
+            } else if reranking {
+                Some(
+                    "cutoff reads the vector lane's order, which a reranker replaces; ask for rerank=false with it",
+                )
+            } else if opts.decompose {
+                Some(
+                    "cutoff reads the scores of the question as asked; ask for decompose=false with it",
+                )
+            } else {
+                None
+            };
+            if let Some(why) = refused {
+                return Err(SconeError::InvalidInput(why.into()));
+            }
+        }
         if let Some(weight) = opts.diversity {
             diversity::check(weight)?;
             if reranking {
@@ -528,6 +560,12 @@ impl Engine {
                 });
             }
         }
+        // The vector lane's own scores, for the cut: verified in this space
+        // and filter, and read before phrases or the limit drop any.
+        let lane_scores: Vec<f64> = items
+            .iter()
+            .filter_map(|item| item.similarity.map(f64::from))
+            .collect();
         // Phrases: across every verified candidate, before the reranker,
         // the per-episode cap and the limit.
         let mut phrase_trace = None;
@@ -608,9 +646,23 @@ impl Engine {
             }
             picked.push(item);
         }
-        let items = picked;
+        let mut items = picked;
         if let Some(trace) = phrase_trace.as_mut() {
             trace.finish(items.len(), opts.limit, window_full);
+        }
+        let mut cutoff_trace = None;
+        if opts.cutoff {
+            let mut trace = cutoff::read(&lane_scores, opts.limit);
+            if let Some(threshold) = trace.threshold {
+                let before = items.len();
+                items.retain(|item| item.similarity.is_some_and(|s| f64::from(s) >= threshold));
+                trace.dropped = before - items.len();
+                trace.why = format!(
+                    "{}; {} passage(s) below it were dropped",
+                    trace.why, trace.dropped
+                );
+            }
+            cutoff_trace = Some(trace);
         }
 
         // Neighbor expansion: answers often live one chunk over. Widen each
@@ -704,6 +756,7 @@ impl Engine {
             lanes,
             phrases: phrase_trace,
             diversity: diversity_trace,
+            cutoff: cutoff_trace,
         })
     }
 

@@ -7,6 +7,7 @@
       "recall.lanes": true,
       "recall.phrases": true,
       "recall.diversity": true,
+      "recall.cutoff": true,
       "facts.read": true,
       "facts.review": true,
       "facts.close": true,
