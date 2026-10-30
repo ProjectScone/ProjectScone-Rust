@@ -257,6 +257,29 @@ impl Engine {
         )?;
         Ok(())
     }
+    /// Episode counts per metadata key and value: which users, agents and
+    /// sessions have memory in this space, keys and values in order. The
+    /// framework's `scopes`, counted by SQLite instead of an episode walk.
+    pub fn scopes(&self, space: &ScopedSpace) -> Result<BTreeMap<String, BTreeMap<String, i64>>> {
+        let mut statement = self.conn.prepare(
+            "SELECT j.key, j.value, COUNT(*) FROM episode_metadata m
+             JOIN episodes e ON e.id = m.episode_id, json_each(m.metadata) j
+             WHERE e.space_id = ?1 GROUP BY j.key, j.value",
+        )?;
+        let rows = statement.query_map(params![space.id()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut scopes: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+        for row in rows {
+            let (key, value, count) = row?;
+            scopes.entry(key).or_default().insert(value, count);
+        }
+        Ok(scopes)
+    }
     pub fn evidence_episode(&self, space: &ScopedSpace, id: i64) -> Result<Value> {
         let row=self.conn.query_row("SELECT e.kind,e.content,e.source,e.created_at,m.metadata FROM episodes e LEFT JOIN episode_metadata m ON m.episode_id=e.id WHERE e.space_id=?1 AND e.id=?2",params![space.id(),id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;
         let (kind, content, source, created_at, metadata) = row.ok_or_else(|| {

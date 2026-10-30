@@ -222,6 +222,7 @@ fn router_with_playground(engine: Engine, config: ServeConfig, playground: Strin
         .route("/v1/facts/{id}/exclude", post(post_fact_exclude))
         .route("/v1/facts/{id}/include", post(post_fact_include))
         .route("/v1/profile", get(get_profile))
+        .route("/v1/scopes", get(get_scopes))
         .route("/v1/status", get(get_status))
         .route("/v1/spaces/{name}/impact", get(get_space_impact))
         .route("/v1/spaces/{name}", delete(delete_space))
@@ -262,7 +263,7 @@ async fn get_capabilities(
         "features": {
             "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "recall.cutoff": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": true, "facts.include": true,
-            "events.read": true, "metrics.read": false, "scopes.read": false,
+            "events.read": true, "metrics.read": false, "scopes.read": true,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
         }
     }))
@@ -934,6 +935,13 @@ async fn get_tags(State(state): State<AppState>, headers: axum::http::HeaderMap)
             })).collect::<Vec<_>>(),
         }))
         .into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn get_scopes(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    match with_engine(&state, &headers, |engine, space| engine.scopes(space)) {
+        Ok(scopes) => Json(serde_json::json!({ "scopes": scopes })).into_response(),
         Err(response) => response,
     }
 }

@@ -15,7 +15,7 @@
       "facts.include": true,
       "events.read": true,
       "metrics.read": false,
-      "scopes.read": false,
+      "scopes.read": true,
       "status.read": true,
       "episodes.list": true,
       "episodes.read": true,
