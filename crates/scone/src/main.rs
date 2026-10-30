@@ -268,6 +268,14 @@ enum FactsCmd {
         #[arg(long)]
         reason: String,
     },
+    /// Keep a fact out of recall with a reason, without closing it
+    Exclude {
+        id: i64,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Let an excluded fact be recalled again
+    Include { id: i64 },
     /// List proposed facts waiting for a decision
     Pending,
     /// Accept a proposed fact: it becomes active and takes its place in
@@ -878,6 +886,22 @@ fn run() -> Result<(), String> {
                         .facts_close(&space, *id, reason)
                         .map_err(|e| e.to_string())?;
                     println!("closed fact {id}: {reason}");
+                }
+                FactsCmd::Exclude { id, reason } => {
+                    engine
+                        .facts_exclude(&space, *id, reason)
+                        .map_err(|e| e.to_string())?;
+                    println!("excluded fact {id}: {}", reason.trim());
+                }
+                FactsCmd::Include { id } => {
+                    let changed = engine
+                        .facts_include(&space, *id)
+                        .map_err(|e| e.to_string())?;
+                    if changed {
+                        println!("included fact {id}");
+                    } else {
+                        println!("fact {id} was not excluded");
+                    }
                 }
                 FactsCmd::Pending => {
                     let facts = engine.facts_pending(&space).map_err(|e| e.to_string())?;

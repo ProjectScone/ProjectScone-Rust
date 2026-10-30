@@ -1175,8 +1175,8 @@ async fn a_proposal_can_be_listed_and_settled_over_http() {
 /// and is not chased here.
 ///
 /// Adding a route to serve.rs fails this test on purpose. If the new
-/// route is an engine essential, add it to the list below and say why in
-/// DECISIONS.md. If it is product surface, it belongs in the Python
+/// route is an engine essential, add it to the list below and say why
+/// beside it. If it is product surface, it belongs in the Python
 /// server instead. What must not happen is the surface widening by
 /// accident, one convenience at a time, until parity is claimed that
 /// nobody is keeping.
@@ -1231,6 +1231,12 @@ fn the_rust_http_surface_stays_frozen_at_the_engine_essentials() {
         "/v1/facts/{id}/approve",
         "/v1/facts/{id}/close",
         "/v1/facts/{id}/decline",
+        // Exclude and include were named in the shared capability contract
+        // from the start, answered false here: a client deciding whether a
+        // fact may be used reads the same flag from either server, so they
+        // are the engine's, not the product's (2026-10-30).
+        "/v1/facts/{id}/exclude",
+        "/v1/facts/{id}/include",
         "/v1/graph",
         "/v1/profile",
         "/v1/recall",
@@ -1271,6 +1277,8 @@ fn every_capability_claim_matches_a_mounted_route() {
         ("facts.read", "/v1/facts"),
         ("facts.review", "/v1/facts/{id}/approve"),
         ("facts.close", "/v1/facts/{id}/close"),
+        ("facts.exclude", "/v1/facts/{id}/exclude"),
+        ("facts.include", "/v1/facts/{id}/include"),
         ("events.read", "/v1/events"),
         ("status.read", "/v1/status"),
         ("episodes.list", "/v1/episodes"),

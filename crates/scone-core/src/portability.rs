@@ -61,13 +61,15 @@ impl Engine {
             "SELECT en.canonical, f.predicate, f.object, f.confidence, f.valid_from,
                     f.valid_until, f.status, f.status_reason,
                     (SELECT json_group_array(e.hash) FROM fact_provenance fp
-                     JOIN episodes e ON e.id = fp.episode_id WHERE fp.fact_id = f.id)
+                     JOIN episodes e ON e.id = fp.episode_id WHERE fp.fact_id = f.id),
+                    f.excluded_reason
              FROM facts f JOIN entities en ON en.id = f.subject_entity
              WHERE f.space_id = ?1 ORDER BY f.id",
         )?;
         let rows = stmt.query_map([space.id()], |r| {
             let provenance: String = r.get(8)?;
-            Ok(serde_json::json!({
+            let excluded_reason: Option<String> = r.get(9)?;
+            let mut record = serde_json::json!({
                 "type": "fact",
                 "subject": r.get::<_, String>(0)?,
                 "predicate": r.get::<_, String>(1)?,
@@ -79,7 +81,13 @@ impl Engine {
                 "status_reason": r.get::<_, Option<String>>(7)?,
                 "provenance_hashes": serde_json::from_str::<serde_json::Value>(&provenance)
                     .unwrap_or_else(|_| serde_json::json!([])),
-            }))
+            });
+            // Only an excluded fact carries the field, so every other
+            // record reads exactly as it did.
+            if let Some(reason) = excluded_reason {
+                record["excluded_reason"] = reason.into();
+            }
+            Ok(record)
         })?;
         for row in rows {
             out.push_str(&row?.to_string());
@@ -177,6 +185,7 @@ impl Engine {
         let confidence = record["confidence"].as_f64().unwrap_or(0.5);
         let valid_until = record["valid_until"].as_str();
         let status_reason = record["status_reason"].as_str();
+        let excluded_reason = record["excluded_reason"].as_str();
 
         // Resolve provenance hashes to local episode ids before writing —
         // a fact without provenance would violate I4.
@@ -231,8 +240,8 @@ impl Engine {
         }
         tx.execute(
             "INSERT INTO facts (space_id, subject_entity, predicate, object, confidence,
-                                valid_from, valid_until, status, status_reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                valid_from, valid_until, status, status_reason, excluded_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 space.id(),
                 entity_id,
@@ -242,7 +251,8 @@ impl Engine {
                 valid_from,
                 valid_until,
                 status,
-                status_reason
+                status_reason,
+                excluded_reason
             ],
         )?;
         let fact_id = tx.last_insert_rowid();

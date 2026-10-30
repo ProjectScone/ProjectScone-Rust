@@ -8,7 +8,7 @@ fn open_creates_schema_and_is_idempotent() {
     let e = Engine::open(dir.path(), Box::new(HashEmbedder::new(64))).unwrap();
     drop(e);
     let e = Engine::open(dir.path(), Box::new(HashEmbedder::new(64))).unwrap();
-    assert_eq!(e.schema_version().unwrap(), 7);
+    assert_eq!(e.schema_version().unwrap(), 8);
     assert!(dir.path().join("scone.db").exists());
 }
 
@@ -55,7 +55,7 @@ fn widening_episode_kinds_keeps_every_row_and_reference() {
 
     // Reopening runs migrations again; they must be idempotent.
     let mut engine = Engine::open(dir.path(), Box::new(HashEmbedder::new(64))).unwrap();
-    assert_eq!(engine.schema_version().unwrap(), 7);
+    assert_eq!(engine.schema_version().unwrap(), 8);
     assert_eq!(
         counts(&mut engine),
         before,
@@ -126,7 +126,7 @@ fn widening_fact_statuses_keeps_every_row_and_reference() {
     drop(raw);
 
     let mut engine = Engine::open(dir.path(), Box::new(HashEmbedder::new(64))).unwrap();
-    assert_eq!(engine.schema_version().unwrap(), 7);
+    assert_eq!(engine.schema_version().unwrap(), 8);
     let probe = rusqlite::Connection::open(dir.path().join("scone.db")).unwrap();
     let columns: Vec<String> = probe
         .prepare("PRAGMA table_info(spaces)")

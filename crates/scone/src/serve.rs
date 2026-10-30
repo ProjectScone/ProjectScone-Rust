@@ -219,6 +219,8 @@ fn router_with_playground(engine: Engine, config: ServeConfig, playground: Strin
         .route("/v1/facts/{id}/approve", post(post_fact_approve))
         .route("/v1/facts/{id}/decline", post(post_fact_decline))
         .route("/v1/facts/{id}/close", post(post_fact_close))
+        .route("/v1/facts/{id}/exclude", post(post_fact_exclude))
+        .route("/v1/facts/{id}/include", post(post_fact_include))
         .route("/v1/profile", get(get_profile))
         .route("/v1/status", get(get_status))
         .route("/v1/spaces/{name}/impact", get(get_space_impact))
@@ -259,7 +261,7 @@ async fn get_capabilities(
         "implementation": "rust",
         "features": {
             "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "recall.cutoff": true, "facts.read": true, "facts.review": true,
-            "facts.close": true, "facts.exclude": false, "facts.include": false,
+            "facts.close": true, "facts.exclude": true, "facts.include": true,
             "events.read": true, "metrics.read": false, "scopes.read": false,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
         }
@@ -674,6 +676,9 @@ struct FactsQuery {
     /// One status instead of the ledger: "proposed" lists what awaits a
     /// person. Unset keeps the previous meaning of this route exactly.
     status: Option<String>,
+    /// List facts excluded from recall too, each with its reason.
+    #[serde(default)]
+    excluded: bool,
 }
 
 async fn get_facts(
@@ -686,29 +691,33 @@ async fn get_facts(
     // calls can straddle a write.
     match with_engine(&state, &headers, |engine, space| {
         let facts = match query.status.as_deref() {
-            Some("proposed") => engine.facts_pending(space)?,
+            Some("proposed") => engine
+                .facts_pending(space)?
+                .into_iter()
+                .map(|f| (f, None))
+                .collect(),
             Some(other) => {
                 return Err(scone_core::SconeError::InvalidInput(format!(
                     "status must be proposed, got {other:?}"
                 )));
             }
-            None => engine.facts_list(space, query.all)?,
+            None => engine.facts_ledger(space, query.all, query.excluded)?,
         };
         let revision = engine.space_revision(space)?;
         // Provenance per fact, so a reader can open what a claim came
         // from rather than take it on the server's word.
         let sources = facts
             .iter()
-            .map(|f| engine.fact_sources(f.fact_id))
+            .map(|(f, _)| engine.fact_sources(f.fact_id))
             .collect::<Result<Vec<_>, _>>()?;
         Ok((facts, revision, sources))
     }) {
         Ok((facts, revision, sources)) => Json(serde_json::json!({
-            "facts": facts.iter().zip(sources).map(|(f, sources)| serde_json::json!({
+            "facts": facts.iter().zip(sources).map(|((f, excluded_reason), sources)| serde_json::json!({
                 "fact_id": f.fact_id, "subject": f.subject, "predicate": f.predicate,
                 "object": f.object, "confidence": f.confidence,
                 "valid_from": f.valid_from, "valid_until": f.valid_until,
-                "status": f.status, "sources": sources,
+                "status": f.status, "excluded_reason": excluded_reason, "sources": sources,
             })).collect::<Vec<_>>(),
             "revision": revision,
         }))
@@ -759,6 +768,46 @@ async fn post_fact_decline(
 #[derive(serde::Deserialize)]
 struct CloseBody {
     reason: String,
+}
+
+/// Keep a fact out of recall, with a reason, without closing it: it still
+/// held over its interval, and the ledger keeps it; it is only not used.
+async fn post_fact_exclude(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    AxPath(id): AxPath<i64>,
+    Json(body): Json<CloseBody>,
+) -> Response {
+    if body.reason.trim().is_empty() || body.reason.len() > 500 {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "reason must be 1..=500 chars",
+        );
+    }
+    match with_engine(&state, &headers, |engine, space| {
+        engine.facts_exclude(space, id, &body.reason)
+    }) {
+        Ok(()) => {
+            Json(serde_json::json!({"excluded": id, "reason": body.reason.trim()})).into_response()
+        }
+        Err(response) => response,
+    }
+}
+
+/// Undo an exclusion; a fact that was not excluded is left as it is.
+async fn post_fact_include(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    AxPath(id): AxPath<i64>,
+) -> Response {
+    match with_engine(&state, &headers, |engine, space| {
+        engine.facts_include(space, id)
+    }) {
+        Ok(changed) => {
+            Json(serde_json::json!({"included": id, "changed": changed})).into_response()
+        }
+        Err(response) => response,
+    }
 }
 
 async fn post_fact_close(
