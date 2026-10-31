@@ -58,6 +58,31 @@ Returned/stored byte reduction is not measured token reduction or answer quality
 Rust and Python have distinct implementations and storage, with only a bounded
 episode-transfer conformance profile rather than complete portability.
 
+A recall can be narrowed and shaped per query, from `scone search` or as
+`GET /v1/recall` parameters:
+
+| Option | CLI | HTTP | Effect |
+| --- | --- | --- | --- |
+| Lanes | `--lanes vector` | `lanes=vector` | Run only the named lanes; text alone makes no embedding call |
+| Phrases | `--require`, `--exclude` | `require=`, `exclude=` (repeatable) | Keep passages that hold, or lack, a phrase as whole words in any case or punctuation |
+| Diversity | `--diversity 0.5` | `diversity=0.5` | Fill places by maximal marginal relevance so near-copies take one; refused beside an active reranker |
+| Rerank | `--no-rerank` | `rerank=false` | Leave the attached reranker out of one recall |
+| Cutoff | `--cutoff` | `cutoff=true` | Return fewer than the limit where the vector scores fall away; vector lane only, suited to one-fact lookups |
+
+Phrases, diversity and the cutoff each record what they did in the recall's
+evidence event: how many passages the phrases dropped, how many places diversity
+gave to other passages, and where the cutoff fell and why.
+
+`scone serve` reads its keys from `config.toml` (`[[server.keys]]`), each bound
+to one space and a role (`read`, `write`, `review` or `full`). Besides recall,
+episodes, sources, facts, profile, status and graph, it answers `GET /v1/scopes`
+(episode counts per metadata key and value), `GET /v1/metrics` (figures computed
+from retained recall events, each with its n and the window's coverage), and,
+for a review or full key, `POST /v1/facts/{id}/exclude` and `/include` (keep a
+fact out of answers with a reason, and bring it back). `GET /v1/capabilities`
+says which shared features this server has; the Rust surface is deliberately
+smaller than the Python server's.
+
 Run `scone --help` or `scone <command> --help` for supported commands. For an
 explicitly model-free local console or MCP server:
 
@@ -88,7 +113,6 @@ The release workflow packages the CLI, C header, license, citation and artifact
 notes for Apple Silicon macOS and x86-64 Linux. It does **not** package a compiled
 FFI library. Manual workflow runs produce downloadable CI artifacts; version
 tags publish releases. No frontend or Python build runs during packaging.
-
 
 ## Contributing, license and citation
 

@@ -70,6 +70,16 @@ profile with identity verification, not a migration tool or proof of complete
 fact/history portability. If `CARGO_TARGET_DIR` is set, use that output directory
 in the explicit binary path instead.
 
+## HTTP surface
+
+The Rust HTTP server keeps to the engine's essentials; product surface belongs
+in the Python server. `crates/scone/tests/serve.rs` lists every mounted `/v1`
+route and fails when one is added, so a new route goes on that list with the
+reason it is an engine essential beside it. Each flag in `GET /v1/capabilities`
+is tied to the route that backs it. `tests/fixtures/http-capabilities.json`
+records both servers' flags: Rust asserts its section and Python its own, and
+the copies in the two repositories must stay byte-identical.
+
 ## Updating embedded pages
 
 `crates/scone/src/console.html` is the native Rust console;
@@ -111,7 +121,6 @@ and private research out of commits. Use disposable local stores for tests.
 Record dataset/model versions, feature flags, retrieval quality, latency,
 resource use and failures; report Rust and Python measurements separately.
 Keep the inherited LICENSE and CITATION.cff terms intact.
-
 
 ## Shared project guidance and citation
 
