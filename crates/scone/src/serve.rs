@@ -209,6 +209,7 @@ fn router_with_playground(engine: Engine, config: ServeConfig, playground: Strin
         .route("/conversations", workspace_page.clone())
         .route("/conversations/{session_id}", workspace_page)
         .route("/v1/graph", get(get_graph))
+        .route("/v1/metrics", get(get_metrics))
         .route("/v1/capabilities", get(get_capabilities))
         .route("/v1/events", get(get_events).post(post_event))
         .route("/v1/episodes/{id}", get(get_episode))
@@ -263,7 +264,7 @@ async fn get_capabilities(
         "features": {
             "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "recall.cutoff": true, "facts.read": true, "facts.review": true,
             "facts.close": true, "facts.exclude": true, "facts.include": true,
-            "events.read": true, "metrics.read": false, "scopes.read": true,
+            "events.read": true, "metrics.read": true, "scopes.read": true,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
         }
     }))
@@ -935,6 +936,31 @@ async fn get_tags(State(state): State<AppState>, headers: axum::http::HeaderMap)
             })).collect::<Vec<_>>(),
         }))
         .into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct MetricsQuery {
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn get_metrics(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
+    match with_engine(&state, &headers, |engine, space| {
+        engine.metrics(
+            space,
+            query.since.as_deref(),
+            query.until.as_deref(),
+            query.limit.unwrap_or(scone_core::metrics::DEFAULT_LIMIT),
+        )
+    }) {
+        Ok(report) => Json(report).into_response(),
         Err(response) => response,
     }
 }

@@ -181,6 +181,7 @@ impl Engine {
             "query_hashed":true,"query_hash":blake3::hash(query.as_bytes()).to_hex().to_string(),
             "items":pack.items.iter().map(|i|json!({"chunk_id":i.chunk_id,"episode_id":i.episode_id,"score":i.score,"similarity":i.similarity})).collect::<Vec<_>>(),
             "fact_ids":pack.facts.iter().map(|f|f.fact_id).collect::<Vec<_>>(),"returned_bytes":pack.returned_bytes,
+            "space_bytes":pack.space_bytes,"embedder":self.embedder.id(),"degraded":pack.degraded,
             "lanes":pack.lanes,
             "phrases":pack.phrases.as_ref().map(crate::phrases::PhraseTrace::json),
             "diversity":pack.diversity.as_ref().map(crate::diversity::DiversityTrace::json),

@@ -16,6 +16,7 @@ pub mod index;
 mod ingest;
 pub mod links;
 pub mod llm;
+pub mod metrics;
 pub mod phrases;
 mod portability;
 pub mod profile;

@@ -469,6 +469,51 @@ async fn evidence_is_scoped_persistent_and_retries_do_not_duplicate() {
     );
 }
 
+/// Metrics come from the caller's own recall events, and a window that is
+/// not a time is refused rather than read as none.
+#[tokio::test]
+async fn metrics_report_the_callers_recalls_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = app(dir.path());
+    let note = serde_json::json!({"kind": "conversation", "content": "the jib needs grease"});
+    let (status, _) = call(
+        &server,
+        "POST",
+        "/v1/episodes",
+        Some("sk-alice"),
+        Some(note),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(&server, "GET", "/v1/recall?q=jib", Some("sk-alice"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, report) = call(&server, "GET", "/v1/metrics", Some("sk-alice"), None).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["evidence"], "sqlite");
+    assert_eq!(report["coverage"]["events_considered"], 1);
+    let count = report["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "recall.count")
+        .unwrap();
+    assert_eq!(count["value"], 1);
+    assert_eq!(report["embedders"].as_array().unwrap().len(), 1);
+
+    let (_, bob) = call(&server, "GET", "/v1/metrics", Some("sk-bob"), None).await;
+    assert_eq!(bob["coverage"]["events_considered"], 0);
+    let (status, _) = call(
+        &server,
+        "GET",
+        "/v1/metrics?since=yesterday",
+        Some("sk-alice"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 /// Scopes count episodes per metadata key and value in the caller's space
 /// only; an episode written without metadata adds nothing.
 #[tokio::test]
@@ -1289,6 +1334,11 @@ fn the_rust_http_surface_stays_frozen_at_the_engine_essentials() {
         "/v1/facts/{id}/exclude",
         "/v1/facts/{id}/include",
         "/v1/graph",
+        // Figures computed from the retained evidence events, with their n
+        // and coverage: an operator reads what recall did from either
+        // server, and the contract named metrics.read from the start
+        // (2026-10-31).
+        "/v1/metrics",
         "/v1/profile",
         "/v1/recall",
         // Which users, agents and sessions have memory in a space: a count
@@ -1335,6 +1385,7 @@ fn every_capability_claim_matches_a_mounted_route() {
         ("facts.exclude", "/v1/facts/{id}/exclude"),
         ("facts.include", "/v1/facts/{id}/include"),
         ("events.read", "/v1/events"),
+        ("metrics.read", "/v1/metrics"),
         ("scopes.read", "/v1/scopes"),
         ("status.read", "/v1/status"),
         ("episodes.list", "/v1/episodes"),
