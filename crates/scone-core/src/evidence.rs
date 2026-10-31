@@ -164,7 +164,9 @@ impl Engine {
                 return Ok(json!({"recorded":id}));
             }
         }
-        tx.execute("INSERT INTO evidence_events(space_id,ts,kind,payload,source_id) VALUES(?1,?2,?3,?4,?5)",params![space.id(),crate::temporal::now_rfc3339(),kind,serialized,source_id])?;
+        // Stamped by SQLite to the millisecond, as episodes are: two events on
+        // one day keep their order in time, and a window can start mid-day.
+        tx.execute("INSERT INTO evidence_events(space_id,ts,kind,payload,source_id) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?2,?3,?4)",params![space.id(),kind,serialized,source_id])?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(json!({"recorded":id}))
