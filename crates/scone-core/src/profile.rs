@@ -38,7 +38,7 @@ impl Engine {
                 "SELECT f.id, en.canonical, f.predicate, f.object, f.confidence,
                         f.valid_from, f.valid_until, f.status
                  FROM facts f JOIN entities en ON en.id = f.subject_entity
-                 WHERE f.space_id = ?1 AND f.status = 'active'
+                 WHERE f.space_id = ?1 AND f.status = 'active' AND f.excluded_reason IS NULL
                    AND f.valid_from <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                    AND (f.valid_until IS NULL
                         OR f.valid_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

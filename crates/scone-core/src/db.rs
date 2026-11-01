@@ -268,5 +268,23 @@ pub(crate) fn open(path: &Path) -> Result<Connection> {
             [],
         )?;
     }
+    if version.as_str() < "8" {
+        // v8: a ledger fact can be excluded from recall, with a reason,
+        // without closing it. Every file gains the column here: the v5
+        // rebuild names its columns, so the base schema cannot carry it.
+        let has_column = conn
+            .prepare("PRAGMA table_info(facts)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .iter()
+            .any(|c| c == "excluded_reason");
+        if !has_column {
+            conn.execute("ALTER TABLE facts ADD COLUMN excluded_reason TEXT", [])?;
+        }
+        conn.execute(
+            "UPDATE meta SET value = '8' WHERE key = 'schema_version'",
+            [],
+        )?;
+    }
     Ok(conn)
 }

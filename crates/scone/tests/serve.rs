@@ -469,6 +469,102 @@ async fn evidence_is_scoped_persistent_and_retries_do_not_duplicate() {
     );
 }
 
+/// Metrics come from the caller's own recall events, and a window that is
+/// not a time is refused rather than read as none.
+#[tokio::test]
+async fn metrics_report_the_callers_recalls_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = app(dir.path());
+    let note = serde_json::json!({"kind": "conversation", "content": "the jib needs grease"});
+    let (status, _) = call(
+        &server,
+        "POST",
+        "/v1/episodes",
+        Some("sk-alice"),
+        Some(note),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(&server, "GET", "/v1/recall?q=jib", Some("sk-alice"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, report) = call(&server, "GET", "/v1/metrics", Some("sk-alice"), None).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["evidence"], "sqlite");
+    assert_eq!(report["coverage"]["events_considered"], 1);
+    let count = report["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "recall.count")
+        .unwrap();
+    assert_eq!(count["value"], 1);
+    assert_eq!(report["embedders"].as_array().unwrap().len(), 1);
+
+    let (_, bob) = call(&server, "GET", "/v1/metrics", Some("sk-bob"), None).await;
+    assert_eq!(bob["coverage"]["events_considered"], 0);
+    let (status, _) = call(
+        &server,
+        "GET",
+        "/v1/metrics?since=yesterday",
+        Some("sk-alice"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Scopes count episodes per metadata key and value in the caller's space
+/// only; an episode written without metadata adds nothing.
+#[tokio::test]
+async fn scopes_count_metadata_in_the_callers_space_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = app(dir.path());
+    let (status, empty) = call(&server, "GET", "/v1/scopes", Some("sk-alice"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty, serde_json::json!({"scopes": {}}));
+    for (key, content, metadata) in [
+        (
+            "sk-alice",
+            "the jib needs grease",
+            Some(serde_json::json!({"user": "mark", "session_id": "s2"})),
+        ),
+        (
+            "sk-alice",
+            "the boom needs paint",
+            Some(serde_json::json!({"user": "mark", "session_id": "s1"})),
+        ),
+        (
+            "sk-alice",
+            "the mast is sound",
+            Some(serde_json::json!({"user": "ana"})),
+        ),
+        ("sk-alice", "nothing says who wrote this", None),
+        (
+            "sk-bob",
+            "bob keeps his own",
+            Some(serde_json::json!({"user": "bob"})),
+        ),
+    ] {
+        let mut body = serde_json::json!({"kind": "conversation", "content": content});
+        if let Some(metadata) = metadata {
+            body["metadata"] = metadata;
+        }
+        let (status, ep) = call(&server, "POST", "/v1/episodes", Some(key), Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{ep}");
+    }
+    let (_, alice) = call(&server, "GET", "/v1/scopes", Some("sk-alice"), None).await;
+    assert_eq!(
+        alice,
+        serde_json::json!({"scopes": {
+            "session_id": {"s1": 1, "s2": 1},
+            "user": {"ana": 1, "mark": 2},
+        }})
+    );
+    let (_, bob) = call(&server, "GET", "/v1/scopes", Some("sk-bob"), None).await;
+    assert_eq!(bob, serde_json::json!({"scopes": {"user": {"bob": 1}}}));
+}
+
 #[tokio::test]
 async fn evidence_links_capture_and_recall_only_to_scoped_records() {
     let dir = tempfile::tempdir().unwrap();
@@ -1175,8 +1271,8 @@ async fn a_proposal_can_be_listed_and_settled_over_http() {
 /// and is not chased here.
 ///
 /// Adding a route to serve.rs fails this test on purpose. If the new
-/// route is an engine essential, add it to the list below and say why in
-/// DECISIONS.md. If it is product surface, it belongs in the Python
+/// route is an engine essential, add it to the list below and say why
+/// beside it. If it is product surface, it belongs in the Python
 /// server instead. What must not happen is the surface widening by
 /// accident, one convenience at a time, until parity is claimed that
 /// nobody is keeping.
@@ -1231,9 +1327,24 @@ fn the_rust_http_surface_stays_frozen_at_the_engine_essentials() {
         "/v1/facts/{id}/approve",
         "/v1/facts/{id}/close",
         "/v1/facts/{id}/decline",
+        // Exclude and include were named in the shared capability contract
+        // from the start, answered false here: a client deciding whether a
+        // fact may be used reads the same flag from either server, so they
+        // are the engine's, not the product's (2026-10-30).
+        "/v1/facts/{id}/exclude",
+        "/v1/facts/{id}/include",
         "/v1/graph",
+        // Figures computed from the retained evidence events, with their n
+        // and coverage: an operator reads what recall did from either
+        // server, and the contract named metrics.read from the start
+        // (2026-10-31).
+        "/v1/metrics",
         "/v1/profile",
         "/v1/recall",
+        // Which users, agents and sessions have memory in a space: a count
+        // over metadata every episode write already accepts, named in the
+        // shared capability contract like exclude and include (2026-10-30).
+        "/v1/scopes",
         "/v1/sources",
         "/v1/spaces/{name}",
         "/v1/spaces/{name}/impact",
@@ -1271,7 +1382,11 @@ fn every_capability_claim_matches_a_mounted_route() {
         ("facts.read", "/v1/facts"),
         ("facts.review", "/v1/facts/{id}/approve"),
         ("facts.close", "/v1/facts/{id}/close"),
+        ("facts.exclude", "/v1/facts/{id}/exclude"),
+        ("facts.include", "/v1/facts/{id}/include"),
         ("events.read", "/v1/events"),
+        ("metrics.read", "/v1/metrics"),
+        ("scopes.read", "/v1/scopes"),
         ("status.read", "/v1/status"),
         ("episodes.list", "/v1/episodes"),
         ("episodes.read", "/v1/episodes/{id}"),

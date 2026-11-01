@@ -245,6 +245,7 @@ impl SconeMcp {
                     source_prefix: p.source_prefix.clone(),
                     since: p.since.clone(),
                     until: p.until.clone(),
+                    ..Default::default()
                 },
             )?;
             Ok((computed, profile, pack))
@@ -445,8 +446,8 @@ impl SconeMcp {
 
 #[tool_handler]
 impl ServerHandler for SconeMcp {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        let mut info = rmcp::model::ServerInfo::default();
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        let mut info = rmcp::model::ServerConfig::default();
         info.server_info.name = "scone".into();
         info.server_info.title = Some("Scone memory engine".into());
         info.server_info.version = env!("CARGO_PKG_VERSION").into();

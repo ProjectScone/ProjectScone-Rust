@@ -6,9 +6,44 @@ use std::collections::HashMap;
 
 use crate::Engine;
 use crate::auth::ScopedSpace;
+use crate::cutoff::{self, CutoffTrace};
+use crate::diversity::{self, DiversityTrace, MAX_DIVERSIFIED};
 use crate::error::{Result, SconeError};
+use crate::phrases::{self, Dropped, PhraseTrace, Phrases};
 
 const CANDIDATES_PER_GENERATOR: usize = 50;
+
+/// The lanes a recall may be asked for, in the order they are named.
+pub const LANES: [&str; 2] = ["vector", "text"];
+
+/// `lanes` as the known lanes asked for, in their own order; refused when
+/// empty or naming a lane recall does not have.
+pub fn asked_lanes(lanes: &[String]) -> Result<Vec<&'static str>> {
+    let mut unknown: Vec<&str> = lanes
+        .iter()
+        .map(String::as_str)
+        .filter(|lane| !LANES.contains(lane))
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
+    if !unknown.is_empty() {
+        return Err(SconeError::InvalidInput(format!(
+            "recall has no lane named {}; its lanes are {}",
+            unknown.join(", "),
+            LANES.join(", ")
+        )));
+    }
+    if lanes.is_empty() {
+        return Err(SconeError::InvalidInput(format!(
+            "ask for at least one lane: {}",
+            LANES.join(", ")
+        )));
+    }
+    Ok(LANES
+        .into_iter()
+        .filter(|lane| lanes.iter().any(|asked| asked == lane))
+        .collect())
+}
 
 /// Interrogative and function words that pollute the BM25 leg of a
 /// natural-language question ("what did I say about X" must rank on X,
@@ -147,6 +182,27 @@ pub struct RecallOpts {
     pub since: Option<String>,
     /// Only episodes that happened at or before this instant.
     pub until: Option<String>,
+    /// The lanes to run: "vector", "text", or both (the default). A lane
+    /// not named is not run, so text alone makes no embedding call.
+    pub lanes: Vec<String>,
+    /// Phrases every returned passage must hold, and phrases none may,
+    /// matched as whole words whatever the case and punctuation. Checked
+    /// across the candidates before the limit, so a passage that fails
+    /// gives its place to one that holds.
+    pub require: Vec<String>,
+    pub exclude: Vec<String>,
+    /// A weight from 0 to 1: fill the answer's places by maximal marginal
+    /// relevance, so near-copies do not take several. A reranker would
+    /// undo it, so it is refused beside one unless `rerank` is off.
+    pub diversity: Option<f64>,
+    /// Use the attached reranker, if any. Off for this call only.
+    pub rerank: bool,
+    /// Return fewer than `limit` passages when the vector lane's scores
+    /// fall away after the first few (see `cutoff`). Measured, it helps
+    /// questions with one answer passage and hurts two-hop ones; it needs
+    /// the vector lane alone, no reranker and no decomposition, the
+    /// setting it was measured in.
+    pub cutoff: bool,
 }
 
 impl Default for RecallOpts {
@@ -162,6 +218,12 @@ impl Default for RecallOpts {
             source_prefix: None,
             since: None,
             until: None,
+            lanes: LANES.map(String::from).to_vec(),
+            require: Vec::new(),
+            exclude: Vec::new(),
+            diversity: None,
+            rerank: true,
+            cutoff: false,
         }
     }
 }
@@ -221,6 +283,14 @@ pub struct ContextPack {
     pub returned_bytes: usize,
     /// Total episode bytes stored in the space at query time.
     pub space_bytes: i64,
+    /// The lanes that answered: those asked for, less any that failed.
+    pub lanes: Vec<&'static str>,
+    /// What required and excluded phrases dropped; `None` without phrases.
+    pub phrases: Option<PhraseTrace>,
+    /// How diversity filled the places; `None` unless it was asked for.
+    pub diversity: Option<DiversityTrace>,
+    /// Where `cutoff` cut the answer; `None` unless it was asked for.
+    pub cutoff: Option<CutoffTrace>,
 }
 
 impl ContextPack {
@@ -242,6 +312,42 @@ impl Engine {
     ) -> Result<ContextPack> {
         if query.trim().is_empty() {
             return Err(SconeError::InvalidInput("query is empty".into()));
+        }
+        let asked = asked_lanes(&opts.lanes)?;
+        let (run_vector, run_text) = (asked.contains(&"vector"), asked.contains(&"text"));
+        phrases::check(&opts.require, &opts.exclude)?;
+        let reranking = opts.rerank && self.reranker.is_some();
+        if opts.cutoff {
+            // Measured on cosines alone: a fused, reranked or decomposed
+            // order is a different list, and a text passage has no cosine.
+            let refused = if asked != ["vector"] {
+                Some(
+                    "cutoff reads where the vector lane's scores fall; ask for lanes=vector with it",
+                )
+            } else if reranking {
+                Some(
+                    "cutoff reads the vector lane's order, which a reranker replaces; ask for rerank=false with it",
+                )
+            } else if opts.decompose {
+                Some(
+                    "cutoff reads the scores of the question as asked; ask for decompose=false with it",
+                )
+            } else {
+                None
+            };
+            if let Some(why) = refused {
+                return Err(SconeError::InvalidInput(why.into()));
+            }
+        }
+        if let Some(weight) = opts.diversity {
+            diversity::check(weight)?;
+            if reranking {
+                return Err(SconeError::InvalidInput(
+                    "diversity and a reranker both set the order, and the reranker would undo \
+                     the diversity; ask for rerank=false with it"
+                        .into(),
+                ));
+            }
         }
         // Staged index writes become visible here (flush-on-recall).
         self.flush_indexes()?;
@@ -273,32 +379,49 @@ impl Engine {
         if opts.decompose {
             queries.extend(decompose(query));
         }
-        // One embedding call for every query, not one per query.
-        let query_vectors = self
-            .embedder
-            .embed(&queries.iter().map(String::as_str).collect::<Vec<_>>())?;
+        // One embedding call for every query, not one per query, and
+        // none when the vector lane was not asked for.
+        let query_vectors = if run_vector {
+            self.embedder
+                .embed(&queries.iter().map(String::as_str).collect::<Vec<_>>())?
+        } else {
+            Vec::new()
+        };
 
         // Candidate generation: each generator may degrade, never abort.
         let mut fused: HashMap<u64, f32> = HashMap::new();
         let mut similarity: HashMap<u64, f32> = HashMap::new();
+        // The text lane answered if any of its searches ran.
+        let mut text_answered = false;
+        // A lane that returned a full window may have left passages unread.
+        let mut window_full = false;
         for (i, sub) in queries.iter().enumerate() {
             let weight = if i == 0 { 1.0 } else { W_SUBQUERY };
-            let fts_hits = match self.fts.search(
-                space.id() as u64,
-                &bm25_query(sub),
-                CANDIDATES_PER_GENERATOR,
-            ) {
-                Ok(hits) => hits,
-                Err(SconeError::InvalidInput(msg)) => {
-                    degraded.push(format!("fts: {msg}"));
-                    Vec::new()
+            let fts_hits = if !run_text {
+                Vec::new()
+            } else {
+                match self.fts.search(
+                    space.id() as u64,
+                    &bm25_query(sub),
+                    CANDIDATES_PER_GENERATOR,
+                ) {
+                    Ok(hits) => {
+                        text_answered = true;
+                        hits
+                    }
+                    Err(SconeError::InvalidInput(msg)) => {
+                        degraded.push(format!("fts: {msg}"));
+                        Vec::new()
+                    }
+                    Err(other) => return Err(other),
                 }
-                Err(other) => return Err(other),
             };
             let vec_hits = match query_vectors.get(i) {
                 Some(qv) => self.vectors.search(qv, CANDIDATES_PER_GENERATOR)?,
                 None => Vec::new(),
             };
+            window_full |= fts_hits.len() >= CANDIDATES_PER_GENERATOR
+                || vec_hits.len() >= CANDIDATES_PER_GENERATOR;
             // Keep the vector lane's cosine similarity before fusion
             // throws it away. Rank fusion answers "which of these is
             // best", never "is any of this about the question", and
@@ -314,6 +437,17 @@ impl Engine {
                     *fused.entry(*chunk_id).or_insert(0.0) += weight / (RRF_K + rank as f32 + 1.0);
                 }
             }
+        }
+        let lanes: Vec<&'static str> = asked
+            .iter()
+            .copied()
+            .filter(|lane| *lane == "vector" || text_answered)
+            .collect();
+        if lanes.is_empty() {
+            return Err(SconeError::InvalidInput(format!(
+                "the only recall lane asked for, text, failed: {}",
+                degraded.join("; ")
+            )));
         }
         let max_fused = fused
             .values()
@@ -426,9 +560,39 @@ impl Engine {
                 });
             }
         }
+        // The vector lane's own scores, for the cut: verified in this space
+        // and filter, and read before phrases or the limit drop any.
+        let lane_scores: Vec<f64> = items
+            .iter()
+            .filter_map(|item| item.similarity.map(f64::from))
+            .collect();
+        // Phrases: across every verified candidate, before the reranker,
+        // the per-episode cap and the limit.
+        let mut phrase_trace = None;
+        if !opts.require.is_empty() || !opts.exclude.is_empty() {
+            let wanted = Phrases::new(&opts.require, &opts.exclude);
+            let mut trace = PhraseTrace {
+                required: opts.require.clone(),
+                excluded: opts.exclude.clone(),
+                checked: items.len(),
+                ..Default::default()
+            };
+            items.retain(|item| match wanted.check(&item.text) {
+                None => true,
+                Some(Dropped::Required) => {
+                    trace.dropped_required += 1;
+                    false
+                }
+                Some(Dropped::Excluded) => {
+                    trace.dropped_excluded += 1;
+                    false
+                }
+            });
+            phrase_trace = Some(trace);
+        }
         // Cross-encoder pass: rescore every surviving candidate against
         // the query jointly. Rank fusion proposes; the reranker disposes.
-        if let Some(reranker) = &self.reranker
+        if let Some(reranker) = self.reranker.as_ref().filter(|_| opts.rerank)
             && !items.is_empty()
         {
             let docs: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
@@ -448,6 +612,12 @@ impl Engine {
         }
 
         order_items(&mut items);
+        let mut diversity_trace = None;
+        if let Some(weight) = opts.diversity {
+            let (ordered, trace) = self.diversified(items, weight, opts.limit, &mut degraded);
+            items = ordered;
+            diversity_trace = Some(trace);
+        }
 
         // Episode diversity: one strong episode must not hog the top slots
         // with many of its chunks; multi-evidence questions need distinct
@@ -476,7 +646,24 @@ impl Engine {
             }
             picked.push(item);
         }
-        let items = picked;
+        let mut items = picked;
+        if let Some(trace) = phrase_trace.as_mut() {
+            trace.finish(items.len(), opts.limit, window_full);
+        }
+        let mut cutoff_trace = None;
+        if opts.cutoff {
+            let mut trace = cutoff::read(&lane_scores, opts.limit);
+            if let Some(threshold) = trace.threshold {
+                let before = items.len();
+                items.retain(|item| item.similarity.is_some_and(|s| f64::from(s) >= threshold));
+                trace.dropped = before - items.len();
+                trace.why = format!(
+                    "{}; {} passage(s) below it were dropped",
+                    trace.why, trace.dropped
+                );
+            }
+            cutoff_trace = Some(trace);
+        }
 
         // Neighbor expansion: answers often live one chunk over. Widen each
         // kept item to its adjacent chunks (contiguous byte spans, so this
@@ -566,7 +753,105 @@ impl Engine {
             degraded,
             returned_bytes,
             space_bytes,
+            lanes,
+            phrases: phrase_trace,
+            diversity: diversity_trace,
+            cutoff: cutoff_trace,
         })
+    }
+
+    /// `items`, in relevance order, with their first places filled by
+    /// maximal marginal relevance (see `diversity`).
+    fn diversified(
+        &self,
+        items: Vec<RecallItem>,
+        weight: f64,
+        limit: usize,
+        degraded: &mut Vec<String>,
+    ) -> (Vec<RecallItem>, DiversityTrace) {
+        let mut considered = items;
+        let rest = considered.split_off(considered.len().min(MAX_DIVERSIFIED));
+        let mut trace = DiversityTrace {
+            weight,
+            candidates: considered.len(),
+            not_diversified: rest.len(),
+            vectors: "index",
+            replaced: 0,
+            why: String::new(),
+        };
+        let vectors = match self.candidate_vectors(&considered) {
+            Ok((vectors, source)) => {
+                trace.vectors = source;
+                vectors
+            }
+            Err(e) => {
+                degraded.push(format!("diversity: {e}"));
+                trace.vectors = "unavailable";
+                trace.why = "no vectors to compare, so relevance order was kept".into();
+                considered.extend(rest);
+                return (considered, trace);
+            }
+        };
+        let scores: Vec<f32> = considered.iter().map(|item| item.score).collect();
+        let order = diversity::mmr_order(&scores, &vectors, weight, 2 * limit);
+        let before: Vec<i64> = considered.iter().take(limit).map(|i| i.chunk_id).collect();
+        let mut slots: Vec<Option<RecallItem>> = considered.into_iter().map(Some).collect();
+        let mut ordered: Vec<RecallItem> = order.iter().filter_map(|&i| slots[i].take()).collect();
+        trace.replaced = ordered
+            .iter()
+            .take(limit)
+            .filter(|item| !before.contains(&item.chunk_id))
+            .count();
+        trace.why = format!(
+            "{} of the first {limit} places went to passages less like those above them",
+            trace.replaced
+        );
+        if !rest.is_empty() {
+            trace.why.push_str(&format!(
+                "; {} candidates past the budget of {MAX_DIVERSIFIED} kept relevance order",
+                rest.len()
+            ));
+        }
+        ordered.extend(rest);
+        (ordered, trace)
+    }
+
+    /// One vector per candidate, all from one source so each likeness is
+    /// on one scale: the stored embeddings when every candidate has one,
+    /// otherwise the candidates embedded once.
+    fn candidate_vectors(&self, items: &[RecallItem]) -> Result<(Vec<Vec<f32>>, &'static str)> {
+        let dim = self.embedder.dim();
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT embedding FROM chunks WHERE id = ?1")?;
+        let mut stored = Vec::with_capacity(items.len());
+        for item in items {
+            let blob: Option<Vec<u8>> = stmt.query_row([item.chunk_id], |r| r.get(0))?;
+            match blob {
+                Some(bytes) if bytes.len() == dim * 4 => stored.push(
+                    bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| f32::from_le_bytes(*c))
+                        .collect(),
+                ),
+                _ => break,
+            }
+        }
+        if stored.len() == items.len() {
+            return Ok((stored, "index"));
+        }
+        let texts: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
+        let embedded = self.embedder.embed(&texts)?;
+        if embedded.len() != items.len() {
+            return Err(SconeError::Embed(format!(
+                "{} vectors came back for {} candidates",
+                embedded.len(),
+                items.len()
+            )));
+        }
+        Ok((embedded, "embedded"))
     }
 
     fn recall_facts(
@@ -597,6 +882,7 @@ impl Engine {
                  JOIN entities en ON en.id = f.subject_entity
                  WHERE f.space_id = ?1
                    AND f.status NOT IN ('proposed', 'declined')
+                   AND f.excluded_reason IS NULL
                    AND f.valid_from <= ?2
                    AND (f.valid_until IS NULL OR f.valid_until > ?2)
                    AND (en.canonical LIKE ?3 OR f.predicate LIKE ?3 OR f.object LIKE ?3

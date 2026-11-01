@@ -5,8 +5,10 @@
 
 pub mod auth;
 pub mod chunker;
+pub mod cutoff;
 mod db;
 pub mod distill;
+pub mod diversity;
 pub mod embed;
 mod error;
 pub mod evidence;
@@ -14,6 +16,8 @@ pub mod index;
 mod ingest;
 pub mod links;
 pub mod llm;
+pub mod metrics;
+pub mod phrases;
 mod portability;
 pub mod profile;
 mod recall;
@@ -33,7 +37,9 @@ pub use ingest::{IngestInput, IngestOutcome, ScanReport};
 pub use links::{FactLinkItem, LINK_KINDS};
 pub use portability::ImportReport;
 pub use profile::{Profile, RecentActivity};
-pub use recall::{ContextPack, FactItem, RecallItem, RecallOpts, decompose, order_items};
+pub use recall::{
+    ContextPack, FactItem, LANES, RecallItem, RecallOpts, asked_lanes, decompose, order_items,
+};
 pub use spaces::SpaceReceipt;
 
 #[derive(Debug)]

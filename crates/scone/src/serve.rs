@@ -209,6 +209,7 @@ fn router_with_playground(engine: Engine, config: ServeConfig, playground: Strin
         .route("/conversations", workspace_page.clone())
         .route("/conversations/{session_id}", workspace_page)
         .route("/v1/graph", get(get_graph))
+        .route("/v1/metrics", get(get_metrics))
         .route("/v1/capabilities", get(get_capabilities))
         .route("/v1/events", get(get_events).post(post_event))
         .route("/v1/episodes/{id}", get(get_episode))
@@ -219,7 +220,10 @@ fn router_with_playground(engine: Engine, config: ServeConfig, playground: Strin
         .route("/v1/facts/{id}/approve", post(post_fact_approve))
         .route("/v1/facts/{id}/decline", post(post_fact_decline))
         .route("/v1/facts/{id}/close", post(post_fact_close))
+        .route("/v1/facts/{id}/exclude", post(post_fact_exclude))
+        .route("/v1/facts/{id}/include", post(post_fact_include))
         .route("/v1/profile", get(get_profile))
+        .route("/v1/scopes", get(get_scopes))
         .route("/v1/status", get(get_status))
         .route("/v1/spaces/{name}/impact", get(get_space_impact))
         .route("/v1/spaces/{name}", delete(delete_space))
@@ -258,9 +262,9 @@ async fn get_capabilities(
         "schema_version": 1,
         "implementation": "rust",
         "features": {
-            "recall": true, "facts.read": true, "facts.review": true,
-            "facts.close": true, "facts.exclude": false, "facts.include": false,
-            "events.read": true, "metrics.read": false, "scopes.read": false,
+            "recall": true, "recall.lanes": true, "recall.phrases": true, "recall.diversity": true, "recall.cutoff": true, "facts.read": true, "facts.review": true,
+            "facts.close": true, "facts.exclude": true, "facts.include": true,
+            "events.read": true, "metrics.read": true, "scopes.read": true,
             "status.read": true, "episodes.list": true, "episodes.read": true, "profile.read": true
         }
     }))
@@ -445,12 +449,41 @@ struct RecallQuery {
     as_of: Option<String>,
     /// Comma-separated tag filter (AND semantics).
     tags: Option<String>,
+    /// Comma-separated lanes to run: vector, text, or both (the default).
+    lanes: Option<String>,
+    /// A weight from 0 to 1 that keeps near-copies from taking several places.
+    diversity: Option<f64>,
+    /// Use the attached reranker, if any (the default); false for this call only.
+    rerank: Option<bool>,
+    /// End the answer where the vector scores fall away. Vector lane only,
+    /// no reranker; the question is then not decomposed.
+    cutoff: Option<bool>,
+}
+
+/// Every value given for `name`, in order: a parameter that repeats, such
+/// as one phrase per `require`.
+fn repeated(raw: Option<&str>, name: &str) -> Vec<String> {
+    form_urlencoded::parse(raw.unwrap_or_default().as_bytes())
+        .filter(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+        .collect()
+}
+
+/// A comma-separated list, trimmed, with empty entries dropped.
+fn comma_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn get_recall(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Query(query): Query<RecallQuery>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Response {
     if query.q.trim().is_empty() || query.q.len() > MAX_QUERY {
         return err(
@@ -458,17 +491,29 @@ async fn get_recall(
             format!("q must be 1..={MAX_QUERY} chars"),
         );
     }
+    let cutoff = query.cutoff.unwrap_or(false);
     let opts = RecallOpts {
         limit: query.limit.unwrap_or(10).clamp(1, 50),
         budget_bytes: None,
         as_of: query.as_of.clone(),
         expand_neighbors: false,
-        decompose: true,
+        // The cut was measured on the question as asked.
+        decompose: !cutoff,
         tags: query
             .tags
             .as_deref()
             .map(|t| t.split(',').map(|x| x.trim().to_owned()).collect())
             .unwrap_or_default(),
+        lanes: query
+            .lanes
+            .as_deref()
+            .map(comma_list)
+            .unwrap_or_else(|| scone_core::LANES.map(String::from).to_vec()),
+        require: repeated(raw.as_deref(), "require"),
+        exclude: repeated(raw.as_deref(), "exclude"),
+        diversity: query.diversity,
+        rerank: query.rerank.unwrap_or(true),
+        cutoff,
         ..Default::default()
     };
     match with_engine(&state, &headers, |engine, space| {
@@ -476,7 +521,8 @@ async fn get_recall(
         let event_id = engine.record_recall_evidence(space, &query.q, &pack)?;
         Ok((pack, event_id))
     }) {
-        Ok((pack, event_id)) => Json(serde_json::json!({
+        Ok((pack, event_id)) => {
+            let mut body = serde_json::json!({
             "event_id":event_id,
             "facts": pack.facts.iter().map(|f| serde_json::json!({
                 "fact_id": f.fact_id, "subject": f.subject, "predicate": f.predicate,
@@ -486,14 +532,25 @@ async fn get_recall(
             })).collect::<Vec<_>>(),
             "items": pack.items.iter().map(|i| serde_json::json!({
                 "episode_id": i.episode_id, "chunk_id":i.chunk_id, "text": i.text, "score": i.score,
-                "source": i.source, "created_at": i.created_at,
+                "similarity": i.similarity, "source": i.source, "created_at": i.created_at,
             })).collect::<Vec<_>>(),
             "degraded": pack.degraded,
+            "lanes": pack.lanes,
             "returned_bytes": pack.returned_bytes,
             "space_bytes": pack.space_bytes,
             "context_reduction": pack.context_reduction(),
-        }))
-        .into_response(),
+            });
+            if let Some(trace) = &pack.phrases {
+                body["phrases"] = trace.json();
+            }
+            if let Some(trace) = &pack.diversity {
+                body["diversity"] = trace.json();
+            }
+            if let Some(trace) = &pack.cutoff {
+                body["cutoff"] = trace.json();
+            }
+            Json(body).into_response()
+        }
         Err(response) => response,
     }
 }
@@ -621,6 +678,9 @@ struct FactsQuery {
     /// One status instead of the ledger: "proposed" lists what awaits a
     /// person. Unset keeps the previous meaning of this route exactly.
     status: Option<String>,
+    /// List facts excluded from recall too, each with its reason.
+    #[serde(default)]
+    excluded: bool,
 }
 
 async fn get_facts(
@@ -633,29 +693,33 @@ async fn get_facts(
     // calls can straddle a write.
     match with_engine(&state, &headers, |engine, space| {
         let facts = match query.status.as_deref() {
-            Some("proposed") => engine.facts_pending(space)?,
+            Some("proposed") => engine
+                .facts_pending(space)?
+                .into_iter()
+                .map(|f| (f, None))
+                .collect(),
             Some(other) => {
                 return Err(scone_core::SconeError::InvalidInput(format!(
                     "status must be proposed, got {other:?}"
                 )));
             }
-            None => engine.facts_list(space, query.all)?,
+            None => engine.facts_ledger(space, query.all, query.excluded)?,
         };
         let revision = engine.space_revision(space)?;
         // Provenance per fact, so a reader can open what a claim came
         // from rather than take it on the server's word.
         let sources = facts
             .iter()
-            .map(|f| engine.fact_sources(f.fact_id))
+            .map(|(f, _)| engine.fact_sources(f.fact_id))
             .collect::<Result<Vec<_>, _>>()?;
         Ok((facts, revision, sources))
     }) {
         Ok((facts, revision, sources)) => Json(serde_json::json!({
-            "facts": facts.iter().zip(sources).map(|(f, sources)| serde_json::json!({
+            "facts": facts.iter().zip(sources).map(|((f, excluded_reason), sources)| serde_json::json!({
                 "fact_id": f.fact_id, "subject": f.subject, "predicate": f.predicate,
                 "object": f.object, "confidence": f.confidence,
                 "valid_from": f.valid_from, "valid_until": f.valid_until,
-                "status": f.status, "sources": sources,
+                "status": f.status, "excluded_reason": excluded_reason, "sources": sources,
             })).collect::<Vec<_>>(),
             "revision": revision,
         }))
@@ -706,6 +770,46 @@ async fn post_fact_decline(
 #[derive(serde::Deserialize)]
 struct CloseBody {
     reason: String,
+}
+
+/// Keep a fact out of recall, with a reason, without closing it: it still
+/// held over its interval, and the ledger keeps it; it is only not used.
+async fn post_fact_exclude(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    AxPath(id): AxPath<i64>,
+    Json(body): Json<CloseBody>,
+) -> Response {
+    if body.reason.trim().is_empty() || body.reason.len() > 500 {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "reason must be 1..=500 chars",
+        );
+    }
+    match with_engine(&state, &headers, |engine, space| {
+        engine.facts_exclude(space, id, &body.reason)
+    }) {
+        Ok(()) => {
+            Json(serde_json::json!({"excluded": id, "reason": body.reason.trim()})).into_response()
+        }
+        Err(response) => response,
+    }
+}
+
+/// Undo an exclusion; a fact that was not excluded is left as it is.
+async fn post_fact_include(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    AxPath(id): AxPath<i64>,
+) -> Response {
+    match with_engine(&state, &headers, |engine, space| {
+        engine.facts_include(space, id)
+    }) {
+        Ok(changed) => {
+            Json(serde_json::json!({"included": id, "changed": changed})).into_response()
+        }
+        Err(response) => response,
+    }
 }
 
 async fn post_fact_close(
@@ -832,6 +936,38 @@ async fn get_tags(State(state): State<AppState>, headers: axum::http::HeaderMap)
             })).collect::<Vec<_>>(),
         }))
         .into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct MetricsQuery {
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn get_metrics(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<MetricsQuery>,
+) -> Response {
+    match with_engine(&state, &headers, |engine, space| {
+        engine.metrics(
+            space,
+            query.since.as_deref(),
+            query.until.as_deref(),
+            query.limit.unwrap_or(scone_core::metrics::DEFAULT_LIMIT),
+        )
+    }) {
+        Ok(report) => Json(report).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn get_scopes(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    match with_engine(&state, &headers, |engine, space| engine.scopes(space)) {
+        Ok(scopes) => Json(serde_json::json!({ "scopes": scopes })).into_response(),
         Err(response) => response,
     }
 }

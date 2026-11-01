@@ -248,6 +248,41 @@ fn facts_why_shows_provenance_and_close_takes_reason() {
 }
 
 #[test]
+fn an_excluded_fact_leaves_search_until_included() {
+    use predicates::prelude::PredicateBooleanExt;
+    let dir = tempfile::tempdir().unwrap();
+    scone(dir.path())
+        .args(["add", "--note", "mark prefers bun today"])
+        .assert()
+        .success();
+    scone(dir.path())
+        .env("SCONE_FAKE_FACTS", FAKE_FACTS)
+        .args(["--llm", "fake", "distill"])
+        .assert()
+        .success();
+    scone(dir.path())
+        .args(["facts", "exclude", "1", "--reason", "a joke"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("excluded fact 1: a joke"));
+    scone(dir.path())
+        .args(["search", "mark prefers"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("fact  mark").not());
+    scone(dir.path())
+        .args(["facts", "include", "1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("included fact 1"));
+    scone(dir.path())
+        .args(["search", "mark prefers"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("fact  mark"));
+}
+
+#[test]
 fn ask_without_llm_prints_context_and_pause_notice() {
     let dir = tempfile::tempdir().unwrap();
     scone(dir.path())

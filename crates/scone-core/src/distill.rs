@@ -400,15 +400,33 @@ pub struct ProvenanceItem {
 
 impl Engine {
     /// Facts of a space; active only unless `all` (closed/expired included).
+    /// Excluded facts are left out.
     pub fn facts_list(&self, space: &ScopedSpace, all: bool) -> Result<Vec<crate::FactItem>> {
+        Ok(self
+            .facts_ledger(space, all, false)?
+            .into_iter()
+            .map(|(item, _)| item)
+            .collect())
+    }
+
+    /// Facts of a space as `facts_list` reads them, each with the reason it
+    /// was excluded from recall; excluded facts are listed only when
+    /// `excluded`.
+    pub fn facts_ledger(
+        &self,
+        space: &ScopedSpace,
+        all: bool,
+        excluded: bool,
+    ) -> Result<Vec<(crate::FactItem, Option<String>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT f.id, en.canonical, f.predicate, f.object, f.confidence,
-                    f.valid_from, f.valid_until, f.status, f.status_reason
+                    f.valid_from, f.valid_until, f.status, f.status_reason, f.excluded_reason
              FROM facts f JOIN entities en ON en.id = f.subject_entity
              WHERE f.space_id = ?1 AND (?2 OR f.status = 'active')
+               AND (?3 OR f.excluded_reason IS NULL)
              ORDER BY f.id",
         )?;
-        let rows = stmt.query_map(rusqlite::params![space.id(), all], |r| {
+        let rows = stmt.query_map(rusqlite::params![space.id(), all, excluded], |r| {
             Ok((
                 crate::FactItem {
                     fact_id: r.get(0)?,
@@ -421,18 +439,84 @@ impl Engine {
                     status: r.get(7)?,
                 },
                 r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<String>>(9)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (mut item, reason) = row?;
+            let (mut item, reason, excluded_reason) = row?;
             // Carry the closure reason in status for display surfaces.
             if let Some(reason) = reason {
                 item.status = format!("{} ({reason})", item.status);
             }
-            out.push(item);
+            out.push((item, excluded_reason));
         }
         Ok(out)
+    }
+
+    /// Keep a ledger fact out of recall, with the reason, without touching
+    /// its interval or status: beside close (it stopped holding) and
+    /// forgetting (the data is gone), this says only "do not use it".
+    /// Excluding an excluded fact replaces the reason.
+    pub fn facts_exclude(&mut self, space: &ScopedSpace, fact_id: i64, reason: &str) -> Result<()> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(SconeError::InvalidInput(
+                "excluding a fact needs a reason".into(),
+            ));
+        }
+        let status = self.fact_status(space, fact_id)?;
+        if !["active", "closed", "expired"].contains(&status.as_str()) {
+            return Err(SconeError::InvalidInput(format!(
+                "fact {fact_id} is {status}; only ledger facts can be excluded"
+            )));
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE facts SET excluded_reason = ?1 WHERE id = ?2 AND space_id = ?3",
+            rusqlite::params![reason, fact_id, space.id()],
+        )?;
+        tx.execute(
+            "UPDATE spaces SET revision = revision + 1 WHERE id = ?1",
+            [space.id()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Undo `facts_exclude`. Returns whether the fact was excluded; a fact
+    /// that was not is left as it is.
+    pub fn facts_include(&mut self, space: &ScopedSpace, fact_id: i64) -> Result<bool> {
+        self.fact_status(space, fact_id)?;
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE facts SET excluded_reason = NULL
+             WHERE id = ?1 AND space_id = ?2 AND excluded_reason IS NOT NULL",
+            rusqlite::params![fact_id, space.id()],
+        )?;
+        if changed > 0 {
+            tx.execute(
+                "UPDATE spaces SET revision = revision + 1 WHERE id = ?1",
+                [space.id()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
+    fn fact_status(&self, space: &ScopedSpace, fact_id: i64) -> Result<String> {
+        self.conn
+            .query_row(
+                "SELECT status FROM facts WHERE id = ?1 AND space_id = ?2",
+                rusqlite::params![fact_id, space.id()],
+                |r| r.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    SconeError::NotFound(format!("fact {fact_id} in space {}", space.name()))
+                }
+                other => SconeError::Db(other),
+            })
     }
 
     /// The episodes that taught us this fact (invariant I4 guarantees ≥1).
@@ -491,7 +575,7 @@ impl Engine {
             "SELECT f.id, en.canonical, f.predicate, f.object, f.confidence,
                     f.valid_from, f.valid_until, f.status
              FROM facts f JOIN entities en ON en.id = f.subject_entity
-             WHERE f.space_id = ?1 AND f.status = 'active'
+             WHERE f.space_id = ?1 AND f.status = 'active' AND f.excluded_reason IS NULL
                AND f.subject_entity IN (
                    SELECT id FROM entities WHERE canonical = ?2
                    UNION

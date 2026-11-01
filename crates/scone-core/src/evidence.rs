@@ -164,7 +164,9 @@ impl Engine {
                 return Ok(json!({"recorded":id}));
             }
         }
-        tx.execute("INSERT INTO evidence_events(space_id,ts,kind,payload,source_id) VALUES(?1,?2,?3,?4,?5)",params![space.id(),crate::temporal::now_rfc3339(),kind,serialized,source_id])?;
+        // Stamped by SQLite to the millisecond, as episodes are: two events on
+        // one day keep their order in time, and a window can start mid-day.
+        tx.execute("INSERT INTO evidence_events(space_id,ts,kind,payload,source_id) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?2,?3,?4)",params![space.id(),kind,serialized,source_id])?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(json!({"recorded":id}))
@@ -179,6 +181,11 @@ impl Engine {
             "query_hashed":true,"query_hash":blake3::hash(query.as_bytes()).to_hex().to_string(),
             "items":pack.items.iter().map(|i|json!({"chunk_id":i.chunk_id,"episode_id":i.episode_id,"score":i.score,"similarity":i.similarity})).collect::<Vec<_>>(),
             "fact_ids":pack.facts.iter().map(|f|f.fact_id).collect::<Vec<_>>(),"returned_bytes":pack.returned_bytes,
+            "space_bytes":pack.space_bytes,"embedder":self.embedder.id(),"degraded":pack.degraded,
+            "lanes":pack.lanes,
+            "phrases":pack.phrases.as_ref().map(crate::phrases::PhraseTrace::json),
+            "diversity":pack.diversity.as_ref().map(crate::diversity::DiversityTrace::json),
+            "cutoff":pack.cutoff.as_ref().map(crate::cutoff::CutoffTrace::json),
             "coverage":"HTTP recall; returned items only; lane ranks unavailable"
         }),None)?;
         receipt["recorded"]
@@ -252,6 +259,29 @@ impl Engine {
             params![id, json!(metadata).to_string()],
         )?;
         Ok(())
+    }
+    /// Episode counts per metadata key and value: which users, agents and
+    /// sessions have memory in this space, keys and values in order. The
+    /// framework's `scopes`, counted by SQLite instead of an episode walk.
+    pub fn scopes(&self, space: &ScopedSpace) -> Result<BTreeMap<String, BTreeMap<String, i64>>> {
+        let mut statement = self.conn.prepare(
+            "SELECT j.key, j.value, COUNT(*) FROM episode_metadata m
+             JOIN episodes e ON e.id = m.episode_id, json_each(m.metadata) j
+             WHERE e.space_id = ?1 GROUP BY j.key, j.value",
+        )?;
+        let rows = statement.query_map(params![space.id()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut scopes: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+        for row in rows {
+            let (key, value, count) = row?;
+            scopes.entry(key).or_default().insert(value, count);
+        }
+        Ok(scopes)
     }
     pub fn evidence_episode(&self, space: &ScopedSpace, id: i64) -> Result<Value> {
         let row=self.conn.query_row("SELECT e.kind,e.content,e.source,e.created_at,m.metadata FROM episodes e LEFT JOIN episode_metadata m ON m.episode_id=e.id WHERE e.space_id=?1 AND e.id=?2",params![space.id(),id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;

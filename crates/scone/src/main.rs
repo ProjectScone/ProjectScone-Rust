@@ -99,6 +99,24 @@ enum Cmd {
         /// Only episodes that happened at or before this RFC 3339 instant
         #[arg(long)]
         until: Option<String>,
+        /// The lanes to run, comma separated: vector, text, or both
+        #[arg(long, value_delimiter = ',', default_values_t = scone_core::LANES.map(String::from))]
+        lanes: Vec<String>,
+        /// A phrase every passage must hold, as whole words (repeatable)
+        #[arg(long)]
+        require: Vec<String>,
+        /// A phrase no passage may hold (repeatable)
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Keep near-copies from taking several places: a weight from 0 to 1
+        #[arg(long)]
+        diversity: Option<f64>,
+        /// Leave the reranker out of this search
+        #[arg(long)]
+        no_rerank: bool,
+        /// Stop where the vector scores fall away (needs --lanes vector)
+        #[arg(long)]
+        cutoff: bool,
     },
     /// Claude Code hook handler (reads hook JSON on stdin, fail-open)
     Hook {
@@ -250,6 +268,14 @@ enum FactsCmd {
         #[arg(long)]
         reason: String,
     },
+    /// Keep a fact out of recall with a reason, without closing it
+    Exclude {
+        id: i64,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Let an excluded fact be recalled again
+    Include { id: i64 },
     /// List proposed facts waiting for a decision
     Pending,
     /// Accept a proposed fact: it becomes active and takes its place in
@@ -528,6 +554,12 @@ fn run() -> Result<(), String> {
             source_prefix,
             since,
             until,
+            lanes,
+            require,
+            exclude,
+            diversity,
+            no_rerank,
+            cutoff,
         } => {
             let space = auth::resolve(&mut engine, &cli.space, true).map_err(|e| e.to_string())?;
             let opts = RecallOpts {
@@ -539,6 +571,12 @@ fn run() -> Result<(), String> {
                 source_prefix: source_prefix.clone(),
                 since: since.clone(),
                 until: until.clone(),
+                lanes: lanes.clone(),
+                require: require.clone(),
+                exclude: exclude.clone(),
+                diversity: *diversity,
+                rerank: !no_rerank,
+                cutoff: *cutoff,
                 ..Default::default()
             };
             let pack = engine
@@ -546,6 +584,18 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             for warning in &pack.degraded {
                 eprintln!("degraded: {warning}");
+            }
+            if pack.lanes.len() < scone_core::LANES.len() {
+                println!("lanes: {}", pack.lanes.join(", "));
+            }
+            if let Some(trace) = &pack.phrases {
+                println!("phrases: {}", trace.why);
+            }
+            if let Some(trace) = &pack.diversity {
+                println!("diversity: {}", trace.why);
+            }
+            if let Some(trace) = &pack.cutoff {
+                println!("cutoff: {}", trace.why);
             }
             for f in &pack.facts {
                 println!(
@@ -836,6 +886,22 @@ fn run() -> Result<(), String> {
                         .facts_close(&space, *id, reason)
                         .map_err(|e| e.to_string())?;
                     println!("closed fact {id}: {reason}");
+                }
+                FactsCmd::Exclude { id, reason } => {
+                    engine
+                        .facts_exclude(&space, *id, reason)
+                        .map_err(|e| e.to_string())?;
+                    println!("excluded fact {id}: {}", reason.trim());
+                }
+                FactsCmd::Include { id } => {
+                    let changed = engine
+                        .facts_include(&space, *id)
+                        .map_err(|e| e.to_string())?;
+                    if changed {
+                        println!("included fact {id}");
+                    } else {
+                        println!("fact {id} was not excluded");
+                    }
                 }
                 FactsCmd::Pending => {
                     let facts = engine.facts_pending(&space).map_err(|e| e.to_string())?;
